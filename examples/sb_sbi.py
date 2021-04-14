@@ -20,34 +20,41 @@ if __name__ == "__main__":
 
         return mu + 0.5 * torch.randn_like(mu)
 
+    x_gt = torch.tensor([3.0, -1.5])
 
     # density_estimator = "mdn_snpe_a"
-    density_estimator = "mdn"
-    method = "SNPE_C"
+    method = "SNPE_A"
     if method == "SNPE_A":
+        density_estimator = "mdn_snpe_a"
         snpe = SNPE_A(prior, density_estimator)
     else:
+        density_estimator = "mdn"
         snpe = SNPE_C(prior, density_estimator)
     simulator, prior = prepare_for_sbi(simulator, prior)
-    domain_param, data_sim = simulate_for_sbi(
-        simulator=simulator,
-        proposal=prior,
-        num_simulations=200,
-        num_workers=1,
-    )
-    snpe.append_simulations(domain_param, data_sim)
-    density_estimator = snpe.train()
-    if method == "SNPE_A":
-        posterior = snpe.build_posterior(proposal=prior, density_estimator=density_estimator)
-    else:
-        posterior = snpe.build_posterior(density_estimator=density_estimator)
+    proposal = prior
+    # multiround training
+    num_rounds = 3
+    for r in range(num_rounds):
+        domain_param, data_sim = simulate_for_sbi(
+            simulator=simulator,
+            proposal=proposal,
+            num_simulations=200,
+            num_workers=1,
+        )
+        snpe.append_simulations(domain_param, data_sim, proposal)
+        density_estimator = snpe.train()
+        if method == "SNPE_A":
+            posterior = snpe.build_posterior(proposal=proposal, density_estimator=density_estimator)
+        else:
+            posterior = snpe.build_posterior(density_estimator=density_estimator)
+        posterior.set_default_x(x_gt)
+        proposal = posterior
 
-    x_gt = torch.tensor([3.0, -1.5])
+
     posterior.log_prob(torch.tensor([3.0, -1.5]), x=x_gt)
+    s = posterior.sample((3,), x=x_gt)
 
-    posterior.sample((3,), x=x_gt)
-
-
+    raise SystemExit(0)
 
 
     n_observations = 5

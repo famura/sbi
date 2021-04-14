@@ -58,8 +58,8 @@ class SNPE_A(PosteriorEstimator):
                 file location (default is `<current working directory>/logs`.)
             show_progress_bars: Whether to show a progressbar during training.
         """
-        if density_estimator != "mdn":
-            raise NotImplementedError  # TODO
+        # if density_estimator != "mdn":
+        #     raise NotImplementedError  # TODO
 
         kwargs = del_entries(locals(), entries=("self", "__class__"))
         super().__init__(**kwargs)
@@ -196,16 +196,34 @@ class SNPE_A(PosteriorEstimator):
         """
 
         if density_estimator is None:
-            density_estimator = self._neural_net
+            density_estimator = self._neural_net    # TODO: check if object is copied or referenced
             # If internal net is used device is defined.
             device = self._device
         else:
             # Otherwise, infer it from the device of the net parameters.
             device = next(density_estimator.parameters()).device
 
-        self._posterior = MoGProposalPosterior(
+        # set proposal of the densitity estimator
+        if isinstance(proposal, (MultivariateNormal, BoxUniform)):
+            density_estimator.set_proposal(proposal)
+        else:
+            density_estimator.set_proposal(proposal.net)
+
+        # self._posterior = MoGProposalPosterior(
+        #     method_family="snpe",
+        #     proposal=proposal,
+        #     neural_net=density_estimator,
+        #     prior=self._prior,
+        #     x_shape=self._x_shape,
+        #     rejection_sampling_parameters=rejection_sampling_parameters,
+        #     sample_with_mcmc=sample_with_mcmc,
+        #     mcmc_method=mcmc_method,
+        #     mcmc_parameters=mcmc_parameters,
+        #     device=device,
+        # )
+
+        self._posterior = DirectPosterior(
             method_family="snpe",
-            proposal=proposal,
             neural_net=density_estimator,
             prior=self._prior,
             x_shape=self._x_shape,
@@ -244,7 +262,7 @@ class SNPE_A(PosteriorEstimator):
 
         Returns: Log-probability of the proposal posterior.
         """
-        assert isinstance(self._neural_net, MoGProposalPosterior)
+        # assert isinstance(proposal, MoGProposalPosterior)
         return self._neural_net.log_prob(theta, x)
 
     # def _proposal_prior_converged(self, epoch: int, stop_after_epochs: int) -> bool:
