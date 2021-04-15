@@ -8,6 +8,12 @@ from sbi.utils.user_input_checks import prepare_for_sbi
 from sbi.analysis.plot import pairplot
 
 
+def simulator(mu):
+    # Generate samples from N(mu, sigma=0.5)
+
+    return mu + 0.5 * torch.randn_like(mu)
+
+
 if __name__ == "__main__":
     num_sim = 200
 
@@ -15,10 +21,7 @@ if __name__ == "__main__":
         low=torch.tensor([-5.0, -5.0]), high=torch.tensor([5.0, 5.0])
     )
 
-    def simulator(mu):
-        # Generate samples from N(mu, sigma=0.5)
-
-        return mu + 0.5 * torch.randn_like(mu)
+    # TODO test MVN prior
 
     x_gt = torch.tensor([3.0, -1.5])
 
@@ -32,6 +35,7 @@ if __name__ == "__main__":
         snpe = SNPE_C(prior, density_estimator)
     simulator, prior = prepare_for_sbi(simulator, prior)
     proposal = prior
+
     # multiround training
     num_rounds = 3
     for r in range(num_rounds):
@@ -43,11 +47,17 @@ if __name__ == "__main__":
         )
         snpe.append_simulations(domain_param, data_sim, proposal)
         density_estimator = snpe.train()
+
         if method == "SNPE_A":
             posterior = snpe.build_posterior(proposal=proposal, density_estimator=density_estimator)
+            # posterior = snpe.build_posterior(proposal=proposal)  # TODO
         else:
             posterior = snpe.build_posterior(density_estimator=density_estimator)
         posterior.set_default_x(x_gt)
+
+        print(posterior.net.training)
+        posterior.log_prob(torch.tensor([3.0, -1.5]), x=x_gt)
+
         proposal = posterior
 
 

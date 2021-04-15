@@ -2,6 +2,7 @@
 # under the Affero General Public License v3, see <https://www.gnu.org/licenses/>.
 
 import math
+from typing import Union
 
 import torch
 from torch import Tensor
@@ -29,42 +30,44 @@ class MoGFlow_SNPE_A(flows.Flow):
             embedding_net: A `nn.Module` which has trainable parameters to encode the
                 context (condition). It is trained jointly with the flow.
         """
-        self._proposal = None
+        # Construct flow
         super().__init__(transform, distribution, embedding_net)
+
         self.logits_pp, self.m_pp, self.prec_pp = None, None, None
+        self._proposal = None
         self.default_x = None
 
+        # Take care of z-scoring, pre-compute and store prior terms.
+        self._set_state_for_mog_proposal()
+
     @property
-    def proposal(self):
+    def proposal(self) -> Union["utils.BoxUniform", MultivariateNormal, "MoGFlow_SNPE_A"]:
+        """ Get the proposal of the previous round. """
         return self._proposal
 
-    def set_proposal(self, proposal):
+    @proposal.setter
+    def proposal(self, proposal: Union["utils.BoxUniform", MultivariateNormal, "MoGFlow_SNPE_A"]):
+        """ Set the proposal of the previous round. """
         self._proposal = proposal
 
     def log_prob(self, inputs, context=None):
-        # TODO: the evaluation function of SNPE-base does not pass a proposal argument
-        #  and hence we currently have to treat "proposal == None" by evaluating the proposal posterior log-prob
-        #  instead of the posterior log-prob.
-        #  Note that evaluation is not wrong as this affects only round 1 where the proposal prior is the prior
-        if self.training or self._proposal is None:
-            # assert proposal is None, "Must not provide a proposal when computing the log prob for training!"
-            return super().log_prob(inputs, context)
+        if self._proposal is None:
+            # Use the usual Flow.lob_prob() if there has been no previous proposal
+            # memorized in this instance. This is the case if we are in the training
+            # loop, i.e. this MoGFlow_SNPE_A instance is not an attribute of a
+            # DirectPosterior instance.
+            return super().log_prob(inputs, context)  # q_phi from eq. (3) in [1]
 
         else:
-            # # assert proposal is not None, "Must provide a proposal when computing the log prob for evaluation!"
-            # if isinstance(self._proposal, (MultivariateNormal, utils.BoxUniform)):
-            #     # Evaluating after the first round when the proposal prior is the prior
-            #     log_prob = super().log_prob(inputs, context)
-            # else:
-
-            # Evaluating after the second round or later when the proposal prior has been updated at least once
+            # When we want to compute the approx. posterior, a proposal prior \tilde{p}
+            # has already been observed. To analytically calculate the log-prob of the
+            # Gaussian, we first need to compute the mixture components.
             log_prob = self._log_prob_proposal_posterior_mog(
-                inputs,
-                context,
+                inputs, context
             )
-            return log_prob
+            return log_prob  # \hat{p} from eq. (3) in [1]
 
-    def sample(self, num_samples, context=None, batch_size=None):
+    def sample(self, num_samples, context=None, batch_size=None) -> Tensor:
         # TODO: the evaluation function of SNPE-base does not pass a proposal argument
         #  and hence we currently have to treat "proposal == None" by sampling from the
         #  proposal posterior instead of the posterior.
@@ -74,15 +77,35 @@ class MoGFlow_SNPE_A(flows.Flow):
         else:
             return self._sample_proposal_posterior_mog(num_samples, context, batch_size)
 
-    def _sample_proposal_posterior_mog(self, num_samples, x: Tensor, batch_size: int):
-        # check if default_x was set previously, then we don't have to calculate the mixture components
-        if self.default_x is not None and torch.all(torch.eq(x.squeeze(), self.default_x.squeeze())):
+    def _sample_proposal_posterior_mog(self, num_samples, x: Tensor, batch_size: int) -> Tensor:
+        """
+
+        :param num_samples:
+        :param x:
+        :param batch_size:
+        :return:
+        """
+        # Check if default_x was set previously.
+        if self.default_x is not None and (x.squeeze() == self.default_x.squeeze()):  #torch.all(torch.eq(x.squeeze(), self.default_x.squeeze())):
+            # Use the previously computed mixture components of the proposal posterior.
             logits_pp, m_pp, prec_pp = self.logits_pp, self.m_pp, self.prec_pp
         else:
-            logits_pp, m_pp, prec_pp = self.get_mixture_components(x)
+            # Compute the mixture components of the proposal posterior.
+            logits_pp, m_pp, prec_pp = self._get_mixture_components(x)
             self.default_x = x
             self.logits_pp, self.m_pp, self.prec_pp = logits_pp, m_pp, prec_pp
 
+        assert logits_pp.ndim == 2
+        assert m_pp.ndim == 3
+        assert prec_pp.ndim == 4
+
+        # Replicate to use batched sampling from pyknos.
+        if batch_size is not None and batch_size > 1:
+            logits_pp = logits_pp.repeat(batch_size, 1)
+            m_pp = m_pp.repeat(batch_size, 1, 1)
+            prec_pp = prec_pp.repeat(batch_size, 1, 1, 1)
+
+        # Return MoG samples.
         return MultivariateGaussianMDN.sample_mog(num_samples, logits_pp, m_pp, prec_pp)
 
     def _log_prob_proposal_posterior_mog(
@@ -111,21 +134,22 @@ class MoGFlow_SNPE_A(flows.Flow):
         Args:
             theta: Batch of parameters θ.
             x: Batch of data.
-            proposal: Proposal distribution.
 
         Returns:
             Log-probability of the proposal posterior.
         """
-
-        # z-score theta if it z-scoring had been requested.
-        # theta = self._maybe_z_score_theta(theta) # TODO: redo at the end. currently I have no clue what z-scoring does.
-
-        if self.default_x is not None and torch.all(torch.eq(x.squeeze(), self.default_x.squeeze())).item():  # TODO: ugly
+        # Check if default_x was set previously.
+        if self.default_x is not None and (x.squeeze() == self.default_x.squeeze()):  #torch.all(torch.eq(x.squeeze(), self.default_x.squeeze())):
+            # Use the previously computed mixture components of the proposal posterior.
             logits_pp, m_pp, prec_pp = self.logits_pp, self.m_pp, self.prec_pp
         else:
-            logits_pp, m_pp, prec_pp = self.get_mixture_components(x)
+            # Compute the mixture components of the proposal posterior.
+            logits_pp, m_pp, prec_pp = self._get_mixture_components(x)
             self.default_x = x
             self.logits_pp, self.m_pp, self.prec_pp = logits_pp, m_pp, prec_pp
+
+        # z-score theta if it z-scoring had been requested.
+        theta = self._maybe_z_score_theta(theta) # TODO: redo at the end. currently I have no clue what z-scoring does.
 
         # Compute the log_prob of theta under the product.
         log_prob_proposal_posterior = self._mog_log_prob(
@@ -137,7 +161,7 @@ class MoGFlow_SNPE_A(flows.Flow):
         MoGFlow_SNPE_A._assert_all_finite(log_prob_proposal_posterior, "proposal posterior eval")
         return log_prob_proposal_posterior
 
-    def get_mixture_components(
+    def _get_mixture_components(
             self,
             x: Tensor,
     ):
@@ -146,7 +170,7 @@ class MoGFlow_SNPE_A(flows.Flow):
         # we call them separately here.
         # encoded_x = proposal._embedding_net(x)
         # dist = proposal._distribution  # defined to avoid ugly black formatting.
-        # logits_p, m_p, prec_p, _, _ = dist.get_mixture_components(encoded_x)
+        # logits_p, m_p, prec_p, _, _ = dist._get_mixture_components(encoded_x)
         # norm_logits_p = logits_p - torch.logsumexp(logits_p, dim=-1, keepdim=True)
 
         # Evaluate the density estimator.
@@ -162,7 +186,7 @@ class MoGFlow_SNPE_A(flows.Flow):
             m_p = self._proposal.mean
             prec_p = self._proposal.precision_matrix
         else:
-            logits_p, m_p, prec_p = self._proposal.get_mixture_components(x)
+            logits_p, m_p, prec_p = self._proposal._get_mixture_components(x)
 
         # Compute the MoG parameters of the proposal posterior.
         logits_pp, m_pp, prec_pp, cov_pp = self._automatic_posterior_transformation(
@@ -313,7 +337,7 @@ class MoGFlow_SNPE_A(flows.Flow):
             training step if the prior is Gaussian.
         """
 
-        self.z_score_theta = isinstance(self.net._transform, CompositeTransform)
+        self.z_score_theta = isinstance(self._transform, CompositeTransform)
 
         self._set_maybe_z_scored_prior()
 
