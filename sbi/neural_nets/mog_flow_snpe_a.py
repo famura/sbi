@@ -46,9 +46,11 @@ class MoGFlow_SNPE_A(flows.Flow):
         """ Set the proposal of the previous round. """
         self._proposal = proposal
 
-        if not isinstance(proposal, MoGFlow_SNPE_A):
-            # Take care of z-scoring, pre-compute and store prior terms.
-            self._set_state_for_mog_proposal()
+        # if not isinstance(proposal, MoGFlow_SNPE_A):
+        #     # Take care of z-scoring, pre-compute and store prior terms.
+        #     self._set_state_for_mog_proposal()
+
+        self._set_state_for_mog_proposal()
 
     def _get_first_prior_from_proposal(self):
         """ Iterate a possible chain of proposals. """
@@ -154,7 +156,7 @@ class MoGFlow_SNPE_A(flows.Flow):
             Log-probability of the proposal posterior.
         """
         # Check if default_x was set previously.
-        if self.default_x is not None and (x.squeeze() == self.default_x.squeeze()):  #torch.all(torch.eq(x.squeeze(), self.default_x.squeeze())):
+        if self.default_x is not None and torch.all(x == self.default_x):  #torch.all(torch.eq(x.squeeze(), self.default_x.squeeze())):
             # Use the previously computed mixture components of the proposal posterior.
             logits_pp, m_pp, prec_pp = self.logits_pp, self.m_pp, self.prec_pp
         else:
@@ -212,7 +214,7 @@ class MoGFlow_SNPE_A(flows.Flow):
             m_d,
             prec_d,
         )
-        return logits_pp, m_pp, prec_pp, cov_pp
+        return logits_pp, m_pp, prec_pp
 
     @staticmethod
     def _assert_all_finite(quantity: Tensor, description: str = "tensor") -> None:
@@ -357,10 +359,10 @@ class MoGFlow_SNPE_A(flows.Flow):
         self._set_maybe_z_scored_prior()
 
         if isinstance(self._maybe_z_scored_prior, MultivariateNormal):
-            self.prec_m_prod_priors.append(torch.mv(
+            self.prec_m_prod_prior = torch.mv(
                 self._maybe_z_scored_prior.precision_matrix,
                 self._maybe_z_scored_prior.loc,
-            ))
+            )
 
     def _set_maybe_z_scored_prior(self) -> None:
         r"""

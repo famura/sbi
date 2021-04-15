@@ -4,6 +4,7 @@ import sbi.utils as utils
 from sbi.inference import simulate_for_sbi
 from sbi.inference.snpe.snpe_a import SNPE_A
 from sbi.inference.snpe.snpe_c import SNPE_C
+from sbi.utils import posterior_nn
 from sbi.utils.user_input_checks import prepare_for_sbi
 from sbi.analysis.plot import pairplot
 
@@ -29,6 +30,7 @@ if __name__ == "__main__":
     method = "SNPE_A"
     if method == "SNPE_A":
         density_estimator = "mdn_snpe_a"
+        density_estimator = posterior_nn(model=density_estimator, num_components=2)
         snpe = SNPE_A(prior, density_estimator)
     else:
         density_estimator = "mdn"
@@ -58,7 +60,6 @@ if __name__ == "__main__":
         posterior.log_prob(torch.tensor([3.0, -1.5]), x=x_gt)
 
         proposal = posterior
-
 
     posterior.log_prob(torch.tensor([3.0, -1.5]), x=x_gt)
     s = posterior.sample((3,), x=x_gt)
