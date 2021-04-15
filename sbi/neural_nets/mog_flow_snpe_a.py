@@ -37,23 +37,35 @@ class MoGFlow_SNPE_A(flows.Flow):
         self._proposal = None
         self.default_x = None
 
-        # Take care of z-scoring, pre-compute and store prior terms.
-        self._set_state_for_mog_proposal()
-
     @property
     def proposal(self) -> Union["utils.BoxUniform", MultivariateNormal, "MoGFlow_SNPE_A"]:
         """ Get the proposal of the previous round. """
         return self._proposal
 
-    @proposal.setter
-    def proposal(self, proposal: Union["utils.BoxUniform", MultivariateNormal, "MoGFlow_SNPE_A"]):
+    def set_proposal(self, proposal: Union["utils.BoxUniform", MultivariateNormal, "MoGFlow_SNPE_A"]):
         """ Set the proposal of the previous round. """
         self._proposal = proposal
 
+        if not isinstance(proposal, MoGFlow_SNPE_A):
+            # Take care of z-scoring, pre-compute and store prior terms.
+            self._set_state_for_mog_proposal()
+
+    def _get_first_prior_from_proposal(self):
+        """ Iterate a possible chain of proposals. """
+        curr_prior = self._proposal
+
+        while curr_prior:
+            if isinstance(curr_prior, (utils.BoxUniform, MultivariateNormal)):
+                break
+            else:
+                curr_prior = curr_prior.proposal
+
+        return curr_prior
+
     def log_prob(self, inputs, context=None):
         if self._proposal is None:
-            # Use the usual Flow.lob_prob() if there has been no previous proposal
-            # memorized in this instance. This is the case if we are in the training
+            # Use Flow.lob_prob() if there has been no previous proposal memorized
+            # in this instance. This is the case if we are in the training
             # loop, i.e. this MoGFlow_SNPE_A instance is not an attribute of a
             # DirectPosterior instance.
             return super().log_prob(inputs, context)  # q_phi from eq. (3) in [1]
@@ -62,22 +74,25 @@ class MoGFlow_SNPE_A(flows.Flow):
             # When we want to compute the approx. posterior, a proposal prior \tilde{p}
             # has already been observed. To analytically calculate the log-prob of the
             # Gaussian, we first need to compute the mixture components.
-            log_prob = self._log_prob_proposal_posterior_mog(
+            return self._log_prob_approx_posterior_mog(
                 inputs, context
-            )
-            return log_prob  # \hat{p} from eq. (3) in [1]
+            )  # \hat{p} from eq. (3) in [1]
 
     def sample(self, num_samples, context=None, batch_size=None) -> Tensor:
-        # TODO: the evaluation function of SNPE-base does not pass a proposal argument
-        #  and hence we currently have to treat "proposal == None" by sampling from the
-        #  proposal posterior instead of the posterior.
-        #  Note that evaluation is not wrong as this affects only round 1 where the proposal prior is the prior
-        if self.training or self._proposal is None:
+        if self._proposal is None:
+            # Use Flow.sample() if there has been no previous proposal memorized
+            # in this instance. This is the case if we are in the training
+            # loop, i.e. this MoGFlow_SNPE_A instance is not an attribute of a
+            # DirectPosterior instance.
             return super().sample(num_samples, context, batch_size)
-        else:
-            return self._sample_proposal_posterior_mog(num_samples, context, batch_size)
 
-    def _sample_proposal_posterior_mog(self, num_samples, x: Tensor, batch_size: int) -> Tensor:
+        else:
+            # When we want to sample from the approx. posterior, a proposal prior \tilde{p}
+            # has already been observed. To analytically calculate the log-prob of the
+            # Gaussian, we first need to compute the mixture components.
+            return self._sample_approx_posterior_mog(num_samples, context, batch_size)
+
+    def _sample_approx_posterior_mog(self, num_samples, x: Tensor, batch_size: int) -> Tensor:
         """
 
         :param num_samples:
@@ -86,7 +101,7 @@ class MoGFlow_SNPE_A(flows.Flow):
         :return:
         """
         # Check if default_x was set previously.
-        if self.default_x is not None and (x.squeeze() == self.default_x.squeeze()):  #torch.all(torch.eq(x.squeeze(), self.default_x.squeeze())):
+        if self.default_x is not None and torch.all(x == self.default_x):
             # Use the previously computed mixture components of the proposal posterior.
             logits_pp, m_pp, prec_pp = self.logits_pp, self.m_pp, self.prec_pp
         else:
@@ -108,13 +123,13 @@ class MoGFlow_SNPE_A(flows.Flow):
         # Return MoG samples.
         return MultivariateGaussianMDN.sample_mog(num_samples, logits_pp, m_pp, prec_pp)
 
-    def _log_prob_proposal_posterior_mog(
+    def _log_prob_approx_posterior_mog(
             self,
             theta: Tensor,
             x: Tensor,
     ) -> Tensor:
         """
-        Return log-probability of the proposal posterior for MoG proposal.
+        Return log-probability of the approximate posterior for MoG proposal.
 
         For MoG proposals and MoG density estimators, this can be done in closed form
         and does not require atomic loss (i.e. there will be no leakage issues).
@@ -342,23 +357,23 @@ class MoGFlow_SNPE_A(flows.Flow):
         self._set_maybe_z_scored_prior()
 
         if isinstance(self._maybe_z_scored_prior, MultivariateNormal):
-            self.prec_m_prod_prior = torch.mv(
+            self.prec_m_prod_priors.append(torch.mv(
                 self._maybe_z_scored_prior.precision_matrix,
                 self._maybe_z_scored_prior.loc,
-            )
+            ))
 
     def _set_maybe_z_scored_prior(self) -> None:
         r"""
         Compute and store potentially standardized prior (if z-scoring was requested).
 
         The proposal posterior is:
-        $pp(\theta|x) = 1/Z * q(\theta|x) * prop(\theta) / p(\theta)$
+        $pp(\theta|x) = 1/Z * q(\theta|x) * p(\theta) / prop(\theta)$
 
         Let's denote z-scored theta by `a`: a = (theta - mean) / std
-        Then pp'(a|x) = 1/Z_2 * q'(a|x) * prop'(a) / p'(a)$
+        Then $pp'(a|x) = 1/Z_2 * q'(a|x) * p'(a) / prop'(a)$
 
         The ' indicates that the evaluation occurs in standardized space. The constant
-        scaling factor has been absorbed into Z_2.
+        scaling factor has been absorbed into $Z_2$.
         From the above equation, we see that we need to evaluate the prior **in
         standardized space**. We build the standardized prior in this function.
 
@@ -366,6 +381,7 @@ class MoGFlow_SNPE_A(flows.Flow):
         the exact prior mean and std (due to implementation issues). Hence, the z-scored
         prior will not be exactly have mean=0 and std=1.
         """
+        prior = self._get_first_prior_from_proposal()
 
         if self.z_score_theta:
             scale = self._transform._transforms[0]._scale
@@ -384,10 +400,10 @@ class MoGFlow_SNPE_A(flows.Flow):
             # N(theta|m,s) = N((theta-m_e)/s_e|(m-m_e)/s_e, s/s_e)
             # Above: m,s are true prior mean and std. m_e,s_e are estimated prior mean
             # and std (estimated from samples and used to build standardize transform).
-            almost_zero_mean = (self._prior.mean - estim_prior_mean) / estim_prior_std
-            almost_one_std = torch.sqrt(self._prior.variance) / estim_prior_std
+            almost_zero_mean = (prior.mean - estim_prior_mean) / estim_prior_std
+            almost_one_std = torch.sqrt(prior.variance) / estim_prior_std
 
-            if isinstance(self._prior, MultivariateNormal):
+            if isinstance(prior, MultivariateNormal):
                 self._maybe_z_scored_prior = MultivariateNormal(
                     almost_zero_mean,
                     torch.diag(almost_one_std),
@@ -396,7 +412,7 @@ class MoGFlow_SNPE_A(flows.Flow):
                 range_ = torch.sqrt(almost_one_std * 3.0)
                 self._maybe_z_scored_prior = utils.BoxUniform(almost_zero_mean - range_, almost_zero_mean + range_)
         else:
-            self._maybe_z_scored_prior = self._prior
+            self._maybe_z_scored_prior = prior
 
     def _maybe_z_score_theta(self, theta: Tensor) -> Tensor:
         """Return potentially standardized theta if z-scoring was requested."""

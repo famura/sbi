@@ -55,7 +55,6 @@ if __name__ == "__main__":
             posterior = snpe.build_posterior(density_estimator=density_estimator)
         posterior.set_default_x(x_gt)
 
-        print(posterior.net.training)
         posterior.log_prob(torch.tensor([3.0, -1.5]), x=x_gt)
 
         proposal = posterior

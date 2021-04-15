@@ -197,10 +197,12 @@ class SNPE_A(PosteriorEstimator):
             device = next(density_estimator.parameters()).device
 
         # Set proposal of the density estimator.
+        # This also evokes the z-scoring correction is necessary.
         if isinstance(proposal, (MultivariateNormal, utils.BoxUniform)):
-            density_estimator.proposal = proposal
+            density_estimator.set_proposal(proposal)
         else:
-            density_estimator.proposal = proposal.net
+            # Extract the MoGFlow_SNPE_A from the DirectPosterior.
+            density_estimator.set_proposal(proposal.net)
 
         self._posterior = DirectPosterior(
             method_family="snpe",
