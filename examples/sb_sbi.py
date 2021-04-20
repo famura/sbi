@@ -12,7 +12,7 @@ from sbi.utils.user_input_checks import prepare_for_sbi
 
 def simulator(mu):
     # Generate samples from N(mu, sigma=0.5)
-    bern = Bernoulli(0.3)
+    bern = Bernoulli(0.45)
     smaple_from_mu1 = bern.sample()
 
     if smaple_from_mu1:
@@ -36,7 +36,7 @@ if __name__ == "__main__":
     method = "SNPE_A"
     if method == "SNPE_A":
         density_estimator = "mdn_snpe_a"
-        density_estimator = posterior_nn(model=density_estimator, num_components=10)
+        density_estimator = posterior_nn(model=density_estimator, num_components=4)
         snpe = SNPE_A(prior, density_estimator)
     else:
         density_estimator = "mdn"
@@ -48,7 +48,7 @@ if __name__ == "__main__":
     fig_th, ax_th = plt.subplots(1)
 
     # multiround training
-    num_rounds = 1
+    num_rounds = 3
     for r in range(num_rounds):
         thetas, data_sim = simulate_for_sbi(
             simulator=simulator,
@@ -99,7 +99,7 @@ if __name__ == "__main__":
         prior.support.base_constraint.upper_bound[1].item(),
     ]
 
-    grid_res = 201
+    grid_res = 101
     x = torch.linspace(bounds[0], bounds[1], grid_res)  # 1 2 3
     y = torch.linspace(bounds[2], bounds[3], grid_res)  # 4 5 6
     x = x.repeat(grid_res)  # 1 2 3 1 2 3 1 2 3
