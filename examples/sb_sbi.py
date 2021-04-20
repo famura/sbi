@@ -19,7 +19,7 @@ if __name__ == "__main__":
     num_sim = 200
 
     prior = utils.BoxUniform(
-        low=torch.tensor([-5.0, -5.0]), high=torch.tensor([5.0, 5.0])
+        low=torch.tensor([-5.0, -3.0]), high=torch.tensor([5.0, 3.0])
     )
 
     # TODO test MVN prior
@@ -39,7 +39,7 @@ if __name__ == "__main__":
     proposal = prior
 
     # multiround training
-    num_rounds = 2
+    num_rounds = 1
     for r in range(num_rounds):
         domain_param, data_sim = simulate_for_sbi(
             simulator=simulator,
@@ -67,7 +67,7 @@ if __name__ == "__main__":
     # raise SystemExit(0)
 
 
-    n_observations = 5
+    n_observations = 1
     observation = torch.tensor([3.0, -1.5])[None] + 0.5 * torch.randn(n_observations, 2)
 
     # import seaborn as sns
@@ -78,70 +78,68 @@ if __name__ == "__main__":
     plt.ylabel(r"$x_2$")
     plt.xlim(-10, 10)
     plt.ylim(-10, 10)
-    plt.show()
 
-    samples = posterior.sample((200,), x=observation[0])
+    samples = posterior.sample((501,), x=observation[0])
 
-    log_probability = posterior.log_prob(samples, x=observation[0])
-    out = pairplot(
-        samples, limits=[[-5, 5], [-5, 5]], figsize=(6, 6), upper="kde", diag="kde"
-    )
+    # out = pairplot(
+    #     samples, limits=[[-5, 5], [-3, 3]], figsize=(6, 6), upper="kde", diag="kde"
+    # )
 
     import numpy as np
 
-    bounds = [3 - 1, 3 + 1, -1.5 - 1, -1.5 + 1]
+    assert isinstance(prior, utils.BoxUniform)
+    bounds = [
+        prior.support.base_constraint.lower_bound[0].item(),
+        prior.support.base_constraint.upper_bound[0].item(),
+        prior.support.base_constraint.lower_bound[1].item(),
+        prior.support.base_constraint.upper_bound[1].item(),
+    ]
 
-    mu_1, mu_2 = torch.tensor(
-        np.mgrid[bounds[0] : bounds[1] : 2 / 50.0, bounds[2] : bounds[3] : 2 / 50.0]
-    ).float()
-
-    grids = torch.cat((mu_1.reshape(-1, 1), mu_2.reshape(-1, 1)), dim=1)
+    grid_res = 201
+    x = torch.linspace(bounds[0], bounds[1], grid_res)  # 1 2 3
+    y = torch.linspace(bounds[2], bounds[3], grid_res)  # 4 5 6
+    x = x.repeat(grid_res)  # 1 2 3 1 2 3 1 2 3
+    y = torch.repeat_interleave(y, grid_res)  # 4 4 4 5 5 5 6 6 6
+    grid_x, grid_y = x.view(grid_res, grid_res), y.view(grid_res, grid_res)
+    grid = torch.stack([x, y], dim=1)
 
     if "SNPE" in method:
         log_prob = sum(
-            [posterior.log_prob(grids, observation[i]) for i in range(len(observation))]
+            [posterior.log_prob(grid, observation[i]) for i in range(len(observation))]
         )
     else:
         log_prob = sum(
             [
                 posterior.net(
                     torch.cat(
-                        (grids, observation[i].repeat((grids.shape[0])).reshape(-1, 2)),
+                        (grid, observation[i].repeat((grid.shape[0])).reshape(-1, 2)),
                         dim=1,
                     )
                 )[:, 0]
-                + posterior._prior.log_prob(grids)
+                + posterior._prior.log_prob(grid)
                 for i in range(len(observation))
             ]
         ).detach()
 
     prob = torch.exp(log_prob - log_prob.max())
     plt.figure(dpi=200)
-    plt.plot([2, 4], [-1.5, -1.5], color="k")
-    plt.plot([3, 3], [-0.5, -2.5], color="k")
-    plt.contourf(prob.reshape(*mu_1.shape), extent=bounds, origin="lower")
+    plt.contourf(prob.reshape(*grid_x.shape), extent=bounds, origin="lower")
     plt.axis("scaled")
-    plt.xlim(2 + 0.3, 4 - 0.3)
-    plt.ylim(-2.5 + 0.3, -0.5 - 0.3)
     plt.title(
         "Posterior with learned likelihood\nfrom %d examples of" % (num_sim)
         + r" $\mu_i\in[-5, 5]$"
     )
-    plt.xlabel(r"$\mu_1$")
-    plt.ylabel(r"$\mu_2$")
+    plt.xlabel(r"$\mu_x$")
+    plt.ylabel(r"$\mu_y$")
 
-    true_like = lambda x: -((x[0] - mu_1) ** 2 + (x[1] - mu_2) ** 2) / (2 * 0.5 ** 2)
+    true_like = lambda x: -((x[0] - grid_x) ** 2 + (x[1] - grid_y) ** 2) / (2 * 0.5 ** 2)
     log_prob = sum([true_like(observation[i]) for i in range(len(observation))])
     plt.figure(dpi=200)
     prob = torch.exp(log_prob - log_prob.max())
-    plt.plot([2, 4], [-1.5, -1.5], color="k")
-    plt.plot([3, 3], [-0.5, -2.5], color="k")
-    plt.contourf(prob.reshape(*mu_1.shape), extent=bounds, origin="lower")
+    plt.contourf(prob.reshape(*grid_x.shape), extent=bounds, origin="lower")
     plt.axis("scaled")
-    plt.xlim(2 + 0.3, 4 - 0.3)
-    plt.ylim(-2.5 + 0.3, -0.5 - 0.3)
     plt.title("Posterior with\nanalytic likelihood")
-    plt.xlabel(r"$\mu_1$")
-    plt.ylabel(r"$\mu_2$")
+    plt.xlabel(r"$\mu_x$")
+    plt.ylabel(r"$\mu_y$")
 
     plt.show()

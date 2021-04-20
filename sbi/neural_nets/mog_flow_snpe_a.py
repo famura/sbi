@@ -97,10 +97,13 @@ class MoGFlow_SNPE_A(flows.Flow):
     def _sample_approx_posterior_mog(self, num_samples, x: Tensor, batch_size: int) -> Tensor:
         """
 
-        :param num_samples:
-        :param x:
-        :param batch_size:
-        :return:
+        Args:
+            num_samples: Desired number of samples.
+            x: Conditioning context for posterior $p(\theta|x)$.
+            batch_size: Batch size for sampling.
+
+        Returns:
+            Samples from the approximate mixture of Gaussians posterior.
         """
         # Check if default_x was set previously.
         if self.default_x is not None and torch.all(x == self.default_x):
@@ -110,7 +113,7 @@ class MoGFlow_SNPE_A(flows.Flow):
             # Compute the mixture components of the proposal posterior.
             logits_pp, m_pp, prec_pp = self._get_mixture_components(x)
 
-            # Only add the default_x if it is a single value and not a batch of data
+            # Only add the default_x if it is a single value and not a batch of data.
             if x.shape[0] == 1:
                 self.default_x = x
             self.logits_pp, self.m_pp, self.prec_pp = logits_pp, m_pp, prec_pp
