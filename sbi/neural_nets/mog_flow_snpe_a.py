@@ -156,9 +156,16 @@ class MoGFlow_SNPE_A(flows.Flow):
             Log-probability of the proposal posterior.
         """
         # Check if default_x was set previously.
-        if self.default_x is not None and torch.all(x == self.default_x):  #torch.all(torch.eq(x.squeeze(), self.default_x.squeeze())):
+        if self.default_x is not None and torch.all(x == self.default_x):
             # Use the previously computed mixture components of the proposal posterior.
             logits_pp, m_pp, prec_pp = self.logits_pp, self.m_pp, self.prec_pp
+
+            # Expand to batch size (e.g., during evaluation)
+            batch_size = theta.shape[0]
+            logits_pp = logits_pp.repeat(batch_size, 1)
+            m_pp = m_pp.repeat(batch_size, 1, 1)
+            prec_pp = prec_pp.repeat(batch_size, 1, 1, 1)
+
         else:
             # Compute the mixture components of the proposal posterior.
             logits_pp, m_pp, prec_pp = self._get_mixture_components(x)
@@ -182,14 +189,6 @@ class MoGFlow_SNPE_A(flows.Flow):
             self,
             x: Tensor,
     ):
-        # Evaluate the proposal. MDNs do not have functionality to run the embedding_net
-        # and then get the mixture_components (**without** calling log_prob()). Hence,
-        # we call them separately here.
-        # encoded_x = proposal._embedding_net(x)
-        # dist = proposal._distribution  # defined to avoid ugly black formatting.
-        # logits_p, m_p, prec_p, _, _ = dist._get_mixture_components(encoded_x)
-        # norm_logits_p = logits_p - torch.logsumexp(logits_p, dim=-1, keepdim=True)
-
         # Evaluate the density estimator.
         encoded_x = self._embedding_net(x)
         dist = self._distribution  # defined to avoid black formatting.
@@ -197,11 +196,18 @@ class MoGFlow_SNPE_A(flows.Flow):
         norm_logits_d = logits_d - torch.logsumexp(logits_d, dim=-1, keepdim=True)
 
         if isinstance(self._proposal, utils.BoxUniform):
+            # Check if positive definite
+            for batches in prec_d:
+                for d in batches:
+                    eig_d = torch.symeig(d, eigenvectors=False).eigenvalues
+                    assert (eig_d > 0).all(), "The precision matrix of the proposal posterior is not positive definite"
             return norm_logits_d, m_d, prec_d
+
         elif isinstance(self._proposal, MultivariateNormal):
             logits_p = torch.tensor([1])
             m_p = self._proposal.mean
             prec_p = self._proposal.precision_matrix
+
         else:
             logits_p, m_p, prec_p = self._proposal._get_mixture_components(x)
 
@@ -448,11 +454,30 @@ class MoGFlow_SNPE_A(flows.Flow):
         num_comps_p = precisions_p.shape[1]
         num_comps_d = precisions_d.shape[1]
 
+        # Check if positive definite
+        for batches in precisions_p:
+            for p in batches:
+                eig_p = torch.symeig(p, eigenvectors=False).eigenvalues
+                assert (eig_p > 0).all(), "The precision matrix of the proposal is not positive definite"
+        for batches in precisions_d:
+            for d in batches:
+                eig_d = torch.symeig(d, eigenvectors=False).eigenvalues
+                assert (eig_d > 0).all(), "The precision matrix of the density estimator is not positive definite"
+
         precisions_p_rep = precisions_p.repeat_interleave(num_comps_d, dim=1)
         precisions_d_rep = precisions_d.repeat(1, num_comps_p, 1, 1)
 
         precisions_pp = precisions_d_rep - precisions_p_rep  # changed sign
-        # assert torch.all(precisions_p_rep < precisions_d_rep)
+
+        # Check if positive definite
+        for batches in precisions_pp:
+            for pp in batches:
+                eig_pp = torch.symeig(pp, eigenvectors=False).eigenvalues
+                print(eig_pp.numpy())
+                if not (eig_pp > 0).all():
+                    print("The precision matrix of a proposal posterior is not positive definite")
+        print("-"*20)
+
         if isinstance(self._maybe_z_scored_prior, MultivariateNormal):
             precisions_pp += self._maybe_z_scored_prior.precision_matrix  # changed sign
 

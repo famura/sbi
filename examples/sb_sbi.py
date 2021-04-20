@@ -30,7 +30,7 @@ if __name__ == "__main__":
     method = "SNPE_A"
     if method == "SNPE_A":
         density_estimator = "mdn_snpe_a"
-        density_estimator = posterior_nn(model=density_estimator, num_components=2)
+        density_estimator = posterior_nn(model=density_estimator, num_components=1)
         snpe = SNPE_A(prior, density_estimator)
     else:
         density_estimator = "mdn"
@@ -39,7 +39,7 @@ if __name__ == "__main__":
     proposal = prior
 
     # multiround training
-    num_rounds = 3
+    num_rounds = 2
     for r in range(num_rounds):
         domain_param, data_sim = simulate_for_sbi(
             simulator=simulator,
@@ -57,14 +57,14 @@ if __name__ == "__main__":
             posterior = snpe.build_posterior(density_estimator=density_estimator)
         posterior.set_default_x(x_gt)
 
-        posterior.log_prob(torch.tensor([3.0, -1.5]), x=x_gt)
+        lp = posterior.log_prob(torch.tensor([3.0, -1.5]), x=x_gt)
 
         proposal = posterior
 
     posterior.log_prob(torch.tensor([3.0, -1.5]), x=x_gt)
     s = posterior.sample((3,), x=x_gt)
 
-    raise SystemExit(0)
+    # raise SystemExit(0)
 
 
     n_observations = 5
