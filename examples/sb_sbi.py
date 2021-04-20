@@ -1,5 +1,6 @@
 import torch
 from matplotlib import pyplot as plt
+from torch.distributions import Bernoulli
 
 import sbi.utils as utils
 from sbi.inference import simulate_for_sbi
@@ -12,8 +13,13 @@ from sbi.analysis.plot import pairplot
 
 def simulator(mu):
     # Generate samples from N(mu, sigma=0.5)
+    bern = Bernoulli(0.3)
+    smaple_from_mu1 = bern.sample()
 
-    return mu + 0.2 * torch.randn_like(mu)
+    if smaple_from_mu1:
+        return mu + 0.5 * torch.randn_like(mu)
+    else:
+        return -mu + 0.5 * torch.randn_like(mu)
 
 
 if __name__ == "__main__":
@@ -28,13 +34,14 @@ if __name__ == "__main__":
     gt = torch.tensor([3.0, -1.5])
 
     # density_estimator = "mdn_snpe_a"
-    method = "SNPE_A"
+    method = "SNPE_C"
     if method == "SNPE_A":
         density_estimator = "mdn_snpe_a"
-        density_estimator = posterior_nn(model=density_estimator, num_components=1)
+        density_estimator = posterior_nn(model=density_estimator, num_components=2)
         snpe = SNPE_A(prior, density_estimator)
     else:
         density_estimator = "mdn"
+        density_estimator = posterior_nn(model=density_estimator, num_components=2)
         snpe = SNPE_C(prior, density_estimator)
     simulator, prior = prepare_for_sbi(simulator, prior)
     proposal = prior
@@ -42,12 +49,12 @@ if __name__ == "__main__":
     fig_th, ax_th = plt.subplots(1)
 
     # multiround training
-    num_rounds = 3
+    num_rounds = 2
     for r in range(num_rounds):
         thetas, data_sim = simulate_for_sbi(
             simulator=simulator,
             proposal=proposal,
-            num_simulations=200,
+            num_simulations=500,
             num_workers=1,
         )
         
@@ -62,13 +69,10 @@ if __name__ == "__main__":
         else:
             posterior = snpe.build_posterior(density_estimator=density_estimator)
         posterior.set_default_x(gt)
-
-        lp = posterior.log_prob(torch.tensor([3.0, -1.5]), x=gt)
-
         proposal = posterior
 
     # Configure plot
-    ax_th.scatter(x=gt[0], y=gt[1], label="gt", marker="*")
+    ax_th.scatter(x=gt[0], y=gt[1], label="gt", marker="*", s=40)
     ax_th.legend()
     ax_th.set_xlim(-5, 5)
     ax_th.set_ylim(-3, 3)
