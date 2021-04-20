@@ -484,18 +484,21 @@ class MoGFlow_SNPE_A(flows.Flow):
         precisions_d_rep = precisions_d.repeat(1, num_comps_p, 1, 1)
 
         precisions_pp = precisions_d_rep - precisions_p_rep  # changed sign
+        if isinstance(self._maybe_z_scored_prior, MultivariateNormal):
+            precisions_pp += self._maybe_z_scored_prior.precision_matrix  # changed sign
 
         # Check if positive definite
-        for batches in precisions_pp:
-            for pp in batches:
+        for idx_batch, batches in enumerate(precisions_pp):
+            for idx_comp, pp in enumerate(batches):
                 eig_pp = torch.symeig(pp, eigenvectors=False).eigenvalues
                 print(eig_pp.numpy())
                 if not (eig_pp > 0).all():
+                    precisions_pp[idx_batch, idx_comp] = pp + torch.eye(pp.shape[0]) * (min(eig_pp) + 1e-6)
                     print("The precision matrix of a proposal posterior is not positive definite")
+                    print(eig_pp.numpy())
+                    print("-"*5)
         print("-"*20)
 
-        if isinstance(self._maybe_z_scored_prior, MultivariateNormal):
-            precisions_pp += self._maybe_z_scored_prior.precision_matrix  # changed sign
 
         covariances_pp = torch.inverse(precisions_pp)
 

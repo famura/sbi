@@ -34,7 +34,7 @@ if __name__ == "__main__":
     gt = torch.tensor([3.0, -1.5])
 
     # density_estimator = "mdn_snpe_a"
-    method = "SNPE_C"
+    method = "SNPE_A"
     if method == "SNPE_A":
         density_estimator = "mdn_snpe_a"
         density_estimator = posterior_nn(model=density_estimator, num_components=2)
@@ -59,15 +59,20 @@ if __name__ == "__main__":
         )
         
         ax_th.scatter(x=thetas[:, 0].numpy(), y=thetas[:, 1].numpy(), label=f"round {r}", s=10)
+        # if r == 1:
+        #     plt.show()
 
         snpe.append_simulations(thetas, data_sim, proposal)
         density_estimator = snpe.train()
 
         if method == "SNPE_A":
-            posterior = snpe.build_posterior(proposal=proposal, density_estimator=density_estimator)
+            posterior = snpe.build_posterior(proposal=proposal, density_estimator=density_estimator,
+                                             sample_with_mcmc=True
+                                             )
             # posterior = snpe.build_posterior(proposal=proposal)  # TODO
         else:
             posterior = snpe.build_posterior(density_estimator=density_estimator)
+
         posterior.set_default_x(gt)
         proposal = posterior
 
