@@ -109,7 +109,10 @@ class MoGFlow_SNPE_A(flows.Flow):
         else:
             # Compute the mixture components of the proposal posterior.
             logits_pp, m_pp, prec_pp = self._get_mixture_components(x)
-            self.default_x = x
+
+            # Only add the default_x if it is a single value and not a batch of data
+            if x.shape[0] == 1:
+                self.default_x = x
             self.logits_pp, self.m_pp, self.prec_pp = logits_pp, m_pp, prec_pp
 
         assert logits_pp.ndim == 2
@@ -169,7 +172,10 @@ class MoGFlow_SNPE_A(flows.Flow):
         else:
             # Compute the mixture components of the proposal posterior.
             logits_pp, m_pp, prec_pp = self._get_mixture_components(x)
-            self.default_x = x
+
+            # Only add the default_x if it is a single value and not a batch of data
+            if x.shape[0] == 1:
+                self.default_x = x
             self.logits_pp, self.m_pp, self.prec_pp = logits_pp, m_pp, prec_pp
 
         # z-score theta if it z-scoring had been requested.
