@@ -68,9 +68,7 @@ if __name__ == "__main__":
         proposal = posterior
 
     # Configure plot
-    gt_z_scored = posterior.net._maybe_z_score_theta(gt.unsqueeze(0))
     ax_th.scatter(x=gt[0], y=gt[1], label="gt", marker="*")
-    ax_th.scatter(x=gt_z_scored[0, 0], y=gt_z_scored[0, 1], label="gt_z", marker="*")
     ax_th.legend()
     ax_th.set_xlim(-5, 5)
     ax_th.set_ylim(-3, 3)

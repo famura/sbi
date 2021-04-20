@@ -128,8 +128,13 @@ class MoGFlow_SNPE_A(flows.Flow):
             m_pp = m_pp.repeat(batch_size, 1, 1)
             prec_pp = prec_pp.repeat(batch_size, 1, 1, 1)
 
-        # Return MoG samples.
-        return MultivariateGaussianMDN.sample_mog(num_samples, logits_pp, m_pp, prec_pp)
+        # Get (optionally z-scored) MoG samples.
+        theta = MultivariateGaussianMDN.sample_mog(num_samples, logits_pp, m_pp, prec_pp)
+
+        if self.z_score_theta:
+            theta, _ = self._transform.inverse(theta)  # 2dn output is the log abs det
+
+        return theta
 
     def _log_prob_approx_posterior_mog(
             self,
