@@ -8,7 +8,6 @@ from sbi.inference.snpe.snpe_a import SNPE_A
 from sbi.inference.snpe.snpe_c import SNPE_C
 from sbi.utils import posterior_nn
 from sbi.utils.user_input_checks import prepare_for_sbi
-from sbi.analysis.plot import pairplot
 
 
 def simulator(mu):
@@ -37,7 +36,7 @@ if __name__ == "__main__":
     method = "SNPE_A"
     if method == "SNPE_A":
         density_estimator = "mdn_snpe_a"
-        density_estimator = posterior_nn(model=density_estimator, num_components=2)
+        density_estimator = posterior_nn(model=density_estimator, num_components=10)
         snpe = SNPE_A(prior, density_estimator)
     else:
         density_estimator = "mdn"
@@ -49,7 +48,7 @@ if __name__ == "__main__":
     fig_th, ax_th = plt.subplots(1)
 
     # multiround training
-    num_rounds = 2
+    num_rounds = 1
     for r in range(num_rounds):
         thetas, data_sim = simulate_for_sbi(
             simulator=simulator,
@@ -67,7 +66,7 @@ if __name__ == "__main__":
 
         if method == "SNPE_A":
             posterior = snpe.build_posterior(proposal=proposal, density_estimator=density_estimator,
-                                             sample_with_mcmc=True
+                                             sample_with_mcmc=False
                                              )
             # posterior = snpe.build_posterior(proposal=proposal)  # TODO
         else:
@@ -82,9 +81,6 @@ if __name__ == "__main__":
     ax_th.set_xlim(-5, 5)
     ax_th.set_ylim(-3, 3)
 
-    posterior.log_prob(torch.tensor([3.0, -1.5]), x=gt)
-    s = posterior.sample((3,), x=gt)
-
     n_observations = 1
     observation = torch.tensor([3.0, -1.5])[None] + 0.5 * torch.randn(n_observations, 2)
 
@@ -94,14 +90,6 @@ if __name__ == "__main__":
     ax_obs.set_ylabel(r"$x_2$")
     ax_obs.set_xlim(-10, 10)
     ax_obs.set_ylim(-10, 10)
-
-    samples = posterior.sample((501,), x=observation[0])
-
-    # out = pairplot(
-    #     samples, limits=[[-5, 5], [-3, 3]], figsize=(6, 6), upper="kde", diag="kde"
-    # )
-
-    import numpy as np
 
     assert isinstance(prior, utils.BoxUniform)
     bounds = [
@@ -121,7 +109,7 @@ if __name__ == "__main__":
 
     if "SNPE" in method:
         log_prob = sum(
-            [posterior.log_prob(grid, observation[i]) for i in range(len(observation))]
+            [posterior.log_prob(grid, observation[i], norm_posterior=False) for i in range(len(observation))]
         )
     else:
         log_prob = sum(

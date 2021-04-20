@@ -71,7 +71,6 @@ class SNPE_A(PosteriorEstimator):
         calibration_kernel: Optional[Callable] = None,
         exclude_invalid_x: bool = True,
         resume_training: bool = False,
-        discard_prior_samples: bool = False,
         retrain_from_scratch_each_round: bool = False,
         show_train_summary: bool = False,
         dataloader_kwargs: Optional[Dict] = None,
@@ -97,9 +96,6 @@ class SNPE_A(PosteriorEstimator):
                 cluster. If `True`, the split between train and validation set, the
                 optimizer, the number of epochs, and the best validation log-prob will
                 be restored from the last time `.train()` was called.
-            discard_prior_samples: Whether to discard samples simulated in round 1, i.e.
-                from the prior. Training may be sped up by ignoring such less targeted
-                samples.
             retrain_from_scratch_each_round: Whether to retrain the conditional density
                 estimator for the posterior from scratch each round.
             show_train_summary: Whether to print the number of epochs and validation
@@ -115,6 +111,9 @@ class SNPE_A(PosteriorEstimator):
         # continue. It's sneaky because we are using the object (self) as a namespace
         # to pass arguments between functions, and that's implicit state management.
         kwargs = utils.del_entries(locals(), entries=("self", "__class__"))
+
+        # SNPE-A always discards the prior samples.
+        kwargs["discard_prior_samples"] = True
 
         self._round = max(self._data_round_index)
 

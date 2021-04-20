@@ -491,14 +491,15 @@ class MoGFlow_SNPE_A(flows.Flow):
         for idx_batch, batches in enumerate(precisions_pp):
             for idx_comp, pp in enumerate(batches):
                 eig_pp = torch.symeig(pp, eigenvectors=False).eigenvalues
-                print(eig_pp.numpy())
+                # print(eig_pp.numpy())
                 if not (eig_pp > 0).all():
-                    precisions_pp[idx_batch, idx_comp] = pp + torch.eye(pp.shape[0]) * (min(eig_pp) + 1e-6)
-                    print("The precision matrix of a proposal posterior is not positive definite")
-                    print(eig_pp.numpy())
-                    print("-"*5)
-        print("-"*20)
-
+                    # Shift the eigenvalues to be at minimum 1e-6
+                    precisions_pp[idx_batch, idx_comp] = pp - torch.eye(pp.shape[0]) * (min(eig_pp) - 1e-6)
+                    # precisions_pp[idx_batch, idx_comp] = torch.clamp(precisions_pp[idx_batch, idx_comp], min=1e-6)
+                    # print("The precision matrix of a proposal posterior is not positive definite")
+                    # print(torch.symeig(precisions_pp[idx_batch, idx_comp],eigenvectors=False).eigenvalues.numpy())
+                    # print("-"*5)
+        # print("-"*20)
 
         covariances_pp = torch.inverse(precisions_pp)
 
