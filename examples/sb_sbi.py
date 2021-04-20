@@ -1,4 +1,5 @@
 import torch
+from matplotlib import pyplot as plt
 
 import sbi.utils as utils
 from sbi.inference import simulate_for_sbi
@@ -12,7 +13,7 @@ from sbi.analysis.plot import pairplot
 def simulator(mu):
     # Generate samples from N(mu, sigma=0.5)
 
-    return mu + 0.5 * torch.randn_like(mu)
+    return mu + 0.2 * torch.randn_like(mu)
 
 
 if __name__ == "__main__":
@@ -24,7 +25,7 @@ if __name__ == "__main__":
 
     # TODO test MVN prior
 
-    x_gt = torch.tensor([3.0, -1.5])
+    gt = torch.tensor([3.0, -1.5])
 
     # density_estimator = "mdn_snpe_a"
     method = "SNPE_A"
@@ -37,17 +38,22 @@ if __name__ == "__main__":
         snpe = SNPE_C(prior, density_estimator)
     simulator, prior = prepare_for_sbi(simulator, prior)
     proposal = prior
+    
+    fig_th, ax_th = plt.subplots(1)
 
     # multiround training
-    num_rounds = 1
+    num_rounds = 3
     for r in range(num_rounds):
-        domain_param, data_sim = simulate_for_sbi(
+        thetas, data_sim = simulate_for_sbi(
             simulator=simulator,
             proposal=proposal,
             num_simulations=200,
             num_workers=1,
         )
-        snpe.append_simulations(domain_param, data_sim, proposal)
+        
+        ax_th.scatter(x=thetas[:, 0].numpy(), y=thetas[:, 1].numpy(), label=f"round {r}", s=10)
+
+        snpe.append_simulations(thetas, data_sim, proposal)
         density_estimator = snpe.train()
 
         if method == "SNPE_A":
@@ -55,29 +61,32 @@ if __name__ == "__main__":
             # posterior = snpe.build_posterior(proposal=proposal)  # TODO
         else:
             posterior = snpe.build_posterior(density_estimator=density_estimator)
-        posterior.set_default_x(x_gt)
+        posterior.set_default_x(gt)
 
-        lp = posterior.log_prob(torch.tensor([3.0, -1.5]), x=x_gt)
+        lp = posterior.log_prob(torch.tensor([3.0, -1.5]), x=gt)
 
         proposal = posterior
 
-    posterior.log_prob(torch.tensor([3.0, -1.5]), x=x_gt)
-    s = posterior.sample((3,), x=x_gt)
+    # Configure plot
+    gt_z_scored = posterior.net._maybe_z_score_theta(gt.unsqueeze(0))
+    ax_th.scatter(x=gt[0], y=gt[1], label="gt", marker="*")
+    ax_th.scatter(x=gt_z_scored[0, 0], y=gt_z_scored[0, 1], label="gt_z", marker="*")
+    ax_th.legend()
+    ax_th.set_xlim(-5, 5)
+    ax_th.set_ylim(-3, 3)
 
-    # raise SystemExit(0)
-
+    posterior.log_prob(torch.tensor([3.0, -1.5]), x=gt)
+    s = posterior.sample((3,), x=gt)
 
     n_observations = 1
     observation = torch.tensor([3.0, -1.5])[None] + 0.5 * torch.randn(n_observations, 2)
 
-    # import seaborn as sns
-    from matplotlib import pyplot as plt
-
-    plt.scatter(x=observation[:, 0], y=observation[:, 1])
-    plt.xlabel(r"$x_1$")
-    plt.ylabel(r"$x_2$")
-    plt.xlim(-10, 10)
-    plt.ylim(-10, 10)
+    fig_obs, ax_obs = plt.subplots(1)
+    ax_obs.scatter(x=observation[:, 0], y=observation[:, 1], label="obs")
+    ax_obs.set_xlabel(r"$x_1$")
+    ax_obs.set_ylabel(r"$x_2$")
+    ax_obs.set_xlim(-10, 10)
+    ax_obs.set_ylim(-10, 10)
 
     samples = posterior.sample((501,), x=observation[0])
 

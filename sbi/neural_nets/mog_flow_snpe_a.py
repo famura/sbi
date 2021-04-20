@@ -182,7 +182,7 @@ class MoGFlow_SNPE_A(flows.Flow):
             self.logits_pp, self.m_pp, self.prec_pp = logits_pp, m_pp, prec_pp
 
         # z-score theta if it z-scoring had been requested.
-        theta = self._maybe_z_score_theta(theta) # TODO: redo at the end. currently I have no clue what z-scoring does.
+        theta = self._maybe_z_score_theta(theta)
 
         # Compute the log_prob of theta under the product.
         log_prob_proposal_posterior = self._mog_log_prob(
@@ -234,6 +234,7 @@ class MoGFlow_SNPE_A(flows.Flow):
     @staticmethod
     def _assert_all_finite(quantity: Tensor, description: str = "tensor") -> None:
         """
+        # TODO move this to sbi (utils), and also do that for NeuralInference
         .. note::
             Hard copy!
 
@@ -251,6 +252,7 @@ class MoGFlow_SNPE_A(flows.Flow):
             precisions_pp: Tensor,
     ) -> Tensor:
         r"""
+        # TODO move this to sbi (utils), and also do that for SNPE-C
         .. note::
             Hard copy!
 
@@ -283,7 +285,7 @@ class MoGFlow_SNPE_A(flows.Flow):
         weights = logits_pp - torch.logsumexp(logits_pp, dim=-1, keepdim=True)
         constant = -(output_dim / 2.0) * torch.log(torch.tensor([2 * math.pi]))
         log_det = 0.5 * torch.log(torch.det(precisions_pp))
-        theta_minus_mean = theta.expand_as(means_pp) - means_pp # TODO: log-prob has wrong dimension
+        theta_minus_mean = theta.expand_as(means_pp) - means_pp
         exponent = -0.5 * utils.batched_mixture_vmv(precisions_pp, theta_minus_mean)
 
         return torch.logsumexp(weights + constant + log_det + exponent, dim=-1)
