@@ -1,5 +1,6 @@
 # This file is part of sbi, a toolkit for simulation-based inference. sbi is licensed
 # under the Affero General Public License v3, see <https://www.gnu.org/licenses/>.
+import warnings
 
 import torch
 from copy import deepcopy
@@ -62,6 +63,7 @@ class SNPE_A(PosteriorEstimator):
 
     def train(
         self,
+        num_rounds: int,
         training_batch_size: int = 50,
         learning_rate: float = 5e-4,
         validation_fraction: float = 0.1,
@@ -78,6 +80,8 @@ class SNPE_A(PosteriorEstimator):
         r"""
         Return density estimator that approximates the distribution $p(\theta|x)$.
         Args:
+            num_rounds: Total number of training rounds. For all but the last round, Algorithm 1 from [1] is executed.
+                For last round, Algorithm 2 from [1] is executed once.
             training_batch_size: Training batch size.
             learning_rate: Learning rate for Adam optimizer.
             validation_fraction: The fraction of data to use for validation.
@@ -106,37 +110,33 @@ class SNPE_A(PosteriorEstimator):
             Density estimator that approximates the distribution $p(\theta|x)$.
         """
 
+        self._num_rounds = num_rounds
         # WARNING: sneaky trick ahead. We proxy the parent's `train` here,
         # requiring the signature to have `num_atoms`, save it for use below, and
         # continue. It's sneaky because we are using the object (self) as a namespace
         # to pass arguments between functions, and that's implicit state management.
-        kwargs = utils.del_entries(locals(), entries=("self", "__class__"))
+        kwargs = utils.del_entries(locals(), entries=("self", "__class__", "num_rounds"))
 
         # SNPE-A always discards the prior samples.
         kwargs["discard_prior_samples"] = True
 
         self._round = max(self._data_round_index)
 
-        if self._round == 0:
+        if self._round < self._num_rounds:
+            # Algorithm 1 from [1]
+            return super().train(**kwargs)
+
+        elif self._round == self._num_rounds:
             # Algorithm 2 from [1]
             return super().train(**kwargs)
 
         else:
-            # self._init_posterior_mdn_2nd_round()
-            # TODO replicate for num_of components
-            # TODO sample_for_sbi
-            # TODO append ...
-
-            # Algorithm 2 from [1]
-
-            # Set the proposal to the last proposal that was passed by the user. For
-            # atomic SNPE, it does not matter what the proposal is. For non-atomic
-            # SNPE, we only use the latest data that was passed, i.e. the one from the
-            # last proposal.
-            proposal = self._proposal_roundwise[-1]
-            # TODO iterate over Algorithm 2 from [1]
-
-            return super().train(**kwargs)
+            warnings.warn(
+                f"Running SNPE-A for more than the specified number of rounds {self._num_rounds} implies running"
+                f"Algorithm 2 from [1] multiple times, which can lead to numerical issues. Moreover, the number of "
+                f"components in the mixture of Gaussian increases with every round after {self._num_rounds}.",
+                UserWarning,
+            )
 
     def build_posterior(
         self,
