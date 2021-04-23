@@ -34,10 +34,11 @@ if __name__ == "__main__":
 
     # density_estimator = "mdn_snpe_a"
     method = "SNPE_A"
+    num_rounds = 2
     if method == "SNPE_A":
         density_estimator = "mdn_snpe_a"
         density_estimator = posterior_nn(model=density_estimator, num_components=4)
-        snpe = SNPE_A(prior, density_estimator)
+        snpe = SNPE_A(4, num_rounds, prior, density_estimator)
     else:
         density_estimator = "mdn"
         density_estimator = posterior_nn(model=density_estimator, num_components=2)
@@ -48,7 +49,6 @@ if __name__ == "__main__":
     fig_th, ax_th = plt.subplots(1)
 
     # multiround training
-    num_rounds = 3
     for r in range(num_rounds):
         thetas, data_sim = simulate_for_sbi(
             simulator=simulator,

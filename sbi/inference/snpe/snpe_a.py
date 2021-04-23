@@ -1,12 +1,14 @@
 # This file is part of sbi, a toolkit for simulation-based inference. sbi is licensed
 # under the Affero General Public License v3, see <https://www.gnu.org/licenses/>.
 import warnings
+from functools import partial
 
-import torch
+from pyknos.mdn.mdn import MultivariateGaussianMDN
 from copy import deepcopy
 
 from typing import Any, Callable, Dict, Optional, Union
 
+import torch
 from torch import Tensor, eye, ones, optim
 from torch.distributions import MultivariateNormal
 
@@ -19,6 +21,8 @@ from sbi.types import TensorboardSummaryWriter, TorchModule
 class SNPE_A(PosteriorEstimator):
     def __init__(
         self,
+        num_components: int,
+        num_rounds: int,
         prior: Optional[Any] = None,
         density_estimator: Union[str, Callable] = "mdn",
         device: str = "cpu",
@@ -36,6 +40,8 @@ class SNPE_A(PosteriorEstimator):
             https://arxiv.org/abs/1605.06376.
 
         Args:
+            num_rounds: Total number of training rounds. For all but the last round, Algorithm 1 from [1] is executed.
+                For last round, Algorithm 2 from [1] is executed once.
             prior: A probability distribution that expresses prior knowledge about the
                 parameters, e.g. which ranges are meaningful for them. Any
                 object with `.log_prob()`and `.sample()` (for example, a PyTorch
@@ -55,15 +61,17 @@ class SNPE_A(PosteriorEstimator):
                 file location (default is `<current working directory>/logs`.)
             show_progress_bars: Whether to show a progressbar during training.
         """
-        # if density_estimator != "mdn":
-        #     raise NotImplementedError  # TODO
-
-        kwargs = utils.del_entries(locals(), entries=("self", "__class__"))
+        self._num_rounds = num_rounds
+        self._num_components = num_components  # TODO extract from density_estimator if that is a callable
+        # WARNING: sneaky trick ahead. We proxy the parent's `train` here,
+        # requiring the signature to have `num_atoms`, save it for use below, and
+        # continue. It's sneaky because we are using the object (self) as a namespace
+        # to pass arguments between functions, and that's implicit state management.
+        kwargs = utils.del_entries(locals(), entries=("self", "__class__", "num_rounds", "num_components"))
         super().__init__(**kwargs)
 
     def train(
         self,
-        num_rounds: int,
         training_batch_size: int = 50,
         learning_rate: float = 5e-4,
         validation_fraction: float = 0.1,
@@ -80,8 +88,6 @@ class SNPE_A(PosteriorEstimator):
         r"""
         Return density estimator that approximates the distribution $p(\theta|x)$.
         Args:
-            num_rounds: Total number of training rounds. For all but the last round, Algorithm 1 from [1] is executed.
-                For last round, Algorithm 2 from [1] is executed once.
             training_batch_size: Training batch size.
             learning_rate: Learning rate for Adam optimizer.
             validation_fraction: The fraction of data to use for validation.
@@ -109,24 +115,26 @@ class SNPE_A(PosteriorEstimator):
         Returns:
             Density estimator that approximates the distribution $p(\theta|x)$.
         """
-
-        self._num_rounds = num_rounds
-        # WARNING: sneaky trick ahead. We proxy the parent's `train` here,
-        # requiring the signature to have `num_atoms`, save it for use below, and
-        # continue. It's sneaky because we are using the object (self) as a namespace
-        # to pass arguments between functions, and that's implicit state management.
-        kwargs = utils.del_entries(locals(), entries=("self", "__class__", "num_rounds"))
+        kwargs = utils.del_entries(locals(), entries=("self", "__class__"))
 
         # SNPE-A always discards the prior samples.
         kwargs["discard_prior_samples"] = True
 
         self._round = max(self._data_round_index)
 
-        if self._round < self._num_rounds:
+        if self._round + 1 < self._num_rounds:
+            # Wrap the function that builds the MDN such that we can make
+            # sure that there is only one component when running
+            # Algorithm 1.
+            self._build_neural_net = partial(self._build_neural_net, num_components=1)
+
             # Algorithm 1 from [1]
             return super().train(**kwargs)
 
-        elif self._round == self._num_rounds:
+        elif self._round + 1 == self._num_rounds:
+            # Extend the MDN to the originally desired number of components
+            self._expand_MoG()
+
             # Algorithm 2 from [1]
             return super().train(**kwargs)
 
@@ -245,3 +253,19 @@ class SNPE_A(PosteriorEstimator):
         Returns: Log-probability of the proposal posterior.
         """
         return self._neural_net.log_prob(theta, x)
+
+    def _expand_MoG(self):
+        assert isinstance(self._neural_net._distribution, MultivariateGaussianMDN)
+
+        # Increase the number of components
+        self._neural_net._distribution._num_components = self._num_components
+
+        # Expand the
+        for name, param in self._neural_net.named_parameters():
+            if any(key in name for key in ["logits", "means", "unconstrained", "upper"]):
+                if "bias" in name:
+                    param.data = param.data.repeat(self._num_components)
+                    param.data.add_(torch.randn_like(param.data) * 1e-6)
+                elif "weight" in name:
+                    param.data = param.data.repeat(self._num_components, 1)
+                    param.data.add_(torch.randn_like(param.data) * 1e-6)
