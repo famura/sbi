@@ -22,7 +22,7 @@ def simulator(mu):
 
 
 if __name__ == "__main__":
-    num_sim = 200
+    num_sim = 10000
 
     prior = utils.BoxUniform(
         low=torch.tensor([-5.0, -3.0]), high=torch.tensor([5.0, 3.0])
@@ -36,20 +36,22 @@ if __name__ == "__main__":
     method = "SNPE_A"
     num_rounds = 2
     if method == "SNPE_A":
+        num_components = 2
         density_estimator = "mdn_snpe_a"
-        density_estimator = posterior_nn(model=density_estimator, num_components=4)
-        snpe = SNPE_A(4, num_rounds, prior, density_estimator)
+        density_estimator = posterior_nn(model=density_estimator, num_components=2)
+        snpe = SNPE_A(2, num_rounds, prior, density_estimator)
     else:
         density_estimator = "mdn"
         density_estimator = posterior_nn(model=density_estimator, num_components=2)
         snpe = SNPE_C(prior, density_estimator)
+
     simulator, prior = prepare_for_sbi(simulator, prior)
     proposal = prior
     
     fig_th, ax_th = plt.subplots(1)
 
     # multiround training
-    for r in range(num_rounds):
+    for r in range(num_rounds + 1):
         thetas, data_sim = simulate_for_sbi(
             simulator=simulator,
             proposal=proposal,
@@ -62,6 +64,9 @@ if __name__ == "__main__":
         #     plt.show()
 
         snpe.append_simulations(thetas, data_sim, proposal)
+
+        if r == num_rounds:
+            break
         density_estimator = snpe.train()
 
         if method == "SNPE_A":

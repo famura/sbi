@@ -122,21 +122,21 @@ class SNPE_A(PosteriorEstimator):
 
         self._round = max(self._data_round_index)
 
-        if self._round + 1 < self._num_rounds:
+        # in the simplest case train one round with Algorithm 2 from [1]
+        if self._num_rounds == 1:
+            self._build_neural_net = partial(self._build_neural_net, num_components=self._num_components)
+
+        # Algorithm 1 from [1]
+        elif self._round + 1 < self._num_rounds:
             # Wrap the function that builds the MDN such that we can make
             # sure that there is only one component when running
-            # Algorithm 1.
+            # Algorithm 1 from [1].
             self._build_neural_net = partial(self._build_neural_net, num_components=1)
 
-            # Algorithm 1 from [1]
-            return super().train(**kwargs)
-
+        # Algorithm 2 from [1]
         elif self._round + 1 == self._num_rounds:
             # Extend the MDN to the originally desired number of components
             self._expand_MoG()
-
-            # Algorithm 2 from [1]
-            return super().train(**kwargs)
 
         else:
             warnings.warn(
@@ -145,6 +145,8 @@ class SNPE_A(PosteriorEstimator):
                 f"components in the mixture of Gaussian increases with every round after {self._num_rounds}.",
                 UserWarning,
             )
+
+        return super().train(**kwargs)
 
     def build_posterior(
         self,
@@ -266,8 +268,8 @@ class SNPE_A(PosteriorEstimator):
                 if "bias" in name:
                     param.data = param.data.repeat(self._num_components)
                     param.data.add_(torch.randn_like(param.data) * 1e-6)
-                    param.grad = None  # we could also repeat the gradient
+                    param.grad = param.grad.repeat(self._num_components)   # we could also repeat the gradient
                 elif "weight" in name:
                     param.data = param.data.repeat(self._num_components, 1)
                     param.data.add_(torch.randn_like(param.data) * 1e-6)
-                    param.grad = None  # we could also repeat the gradient
+                    param.grad = param.grad.repeat(self._num_components, 1)  # we could also repeat the gradient
