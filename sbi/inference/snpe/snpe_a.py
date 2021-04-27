@@ -1,15 +1,13 @@
 # This file is part of sbi, a toolkit for simulation-based inference. sbi is licensed
 # under the Affero General Public License v3, see <https://www.gnu.org/licenses/>.
 import warnings
-from functools import partial
-
-from pyknos.mdn.mdn import MultivariateGaussianMDN
 from copy import deepcopy
-
+from functools import partial
 from typing import Any, Callable, Dict, Optional, Union
 
 import torch
-from torch import Tensor, eye, ones, optim
+from pyknos.mdn.mdn import MultivariateGaussianMDN
+from torch import Tensor
 from torch.distributions import MultivariateNormal
 
 import sbi.utils as utils
@@ -41,8 +39,8 @@ class SNPE_A(PosteriorEstimator):
 
         Args:
             num_components: Number of components. This number is overwritten to 1 for Algorithm 1.
-            num_rounds: Total number of training rounds. For all but the last round, Algorithm 1 from [1] is executed.
-                For last round, Algorithm 2 from [1] is executed once.
+            num_rounds: Total number of training rounds. For all but the last round, Algorithm 1
+                from [1] is executed. For last round, Algorithm 2 from [1] is executed once.
             prior: A probability distribution that expresses prior knowledge about the
                 parameters, e.g. which ranges are meaningful for them. Any
                 object with `.log_prob()`and `.sample()` (for example, a PyTorch
@@ -62,13 +60,18 @@ class SNPE_A(PosteriorEstimator):
                 file location (default is `<current working directory>/logs`.)
             show_progress_bars: Whether to show a progressbar during training.
         """
+
         self._num_rounds = num_rounds
-        self._num_components = num_components  # TODO extract from density_estimator if that is a callable
+        # TODO How to extract the number of components from density_estimator if that is a callable?
+        self._num_components = num_components
+
         # WARNING: sneaky trick ahead. We proxy the parent's `train` here,
         # requiring the signature to have `num_atoms`, save it for use below, and
         # continue. It's sneaky because we are using the object (self) as a namespace
         # to pass arguments between functions, and that's implicit state management.
-        kwargs = utils.del_entries(locals(), entries=("self", "__class__", "num_rounds", "num_components"))
+        kwargs = utils.del_entries(
+            locals(), entries=("self", "__class__", "num_rounds", "num_components")
+        )
         super().__init__(**kwargs)
 
     def train(
@@ -123,19 +126,21 @@ class SNPE_A(PosteriorEstimator):
 
         self._round = max(self._data_round_index)
 
-        # in the simplest case train one round with Algorithm 2 from [1]
+        # In case there is will only be one round, train with Algorithm 2 from [1].
         if self._num_rounds == 1:
-            self._build_neural_net = partial(self._build_neural_net, num_components=self._num_components)
+            self._build_neural_net = partial(
+                self._build_neural_net, num_components=self._num_components
+            )
 
         # Run Algorithm 1 from [1].
         elif self._round + 1 < self._num_rounds:
             # Wrap the function that builds the MDN such that we can make
-            # sure that there is only one component when running
+            # sure that there is only one component when running.
             self._build_neural_net = partial(self._build_neural_net, num_components=1)
 
         # Run Algorithm 2 from [1].
         elif self._round + 1 == self._num_rounds:
-            # Extend the MDN to the originally desired number of components
+            # Extend the MDN to the originally desired number of components.
             self._expand_MoG()
 
         else:
@@ -198,7 +203,9 @@ class SNPE_A(PosteriorEstimator):
         """
 
         if density_estimator is None:
-            density_estimator = deepcopy(self._neural_net)  # PosteriorEstimator.train() also returns a deepcopy
+            density_estimator = deepcopy(
+                self._neural_net
+            )  # PosteriorEstimator.train() also returns a deepcopy
             # If internal net is used device is defined.
             device = self._device
         else:
@@ -233,7 +240,9 @@ class SNPE_A(PosteriorEstimator):
 
         return deepcopy(self._posterior)
 
-    def _log_prob_proposal_posterior(self, theta: Tensor, x: Tensor, masks: Tensor, proposal: Optional[Any]) -> Tensor:
+    def _log_prob_proposal_posterior(
+        self, theta: Tensor, x: Tensor, masks: Tensor, proposal: Optional[Any]
+    ) -> Tensor:
         """
         Return the log-probability of the proposal posterior.
 
@@ -264,12 +273,16 @@ class SNPE_A(PosteriorEstimator):
 
         # Expand the 1-dim Ga
         for name, param in self._neural_net.named_parameters():
-            if any(key in name for key in ["logits", "means", "unconstrained", "upper"]):
+            if any(
+                key in name for key in ["logits", "means", "unconstrained", "upper"]
+            ):
                 if "bias" in name:
                     param.data = param.data.repeat(self._num_components)
                     param.data.add_(torch.randn_like(param.data) * 1e-6)
-                    param.grad = param.grad.repeat(self._num_components)   # we could also repeat the gradient
+                    param.grad = None   # we could also repeat the gradient
+                    # param.grad = param.grad.repeat(self._num_components)
                 elif "weight" in name:
                     param.data = param.data.repeat(self._num_components, 1)
                     param.data.add_(torch.randn_like(param.data) * 1e-6)
-                    param.grad = param.grad.repeat(self._num_components, 1)  # we could also repeat the gradient
+                    param.grad = None  # we could also repeat the gradient
+                    # param.grad = param.grad.repeat(self._num_components, 1)

@@ -70,7 +70,7 @@ if __name__ == "__main__":
             simulator=simulator,
             proposal=proposal,
             num_simulations=num_sim,
-            num_workers=4,
+            num_workers=1,
         )
         
         ax_th.scatter(x=thetas[:, 0].numpy(), y=thetas[:, 1].numpy(), label=f"round {r}", s=10)
@@ -97,6 +97,7 @@ if __name__ == "__main__":
 
     # Configure plot
     ax_th.scatter(x=gt[0], y=gt[1], label="gt", marker="*", s=40)
+    ax_th.scatter(x=-gt[0], y=-gt[1], label="-gt", marker="*", s=40)
     ax_th.legend()
     ax_th.set_xlim(-5, 5)
     ax_th.set_ylim(-3, 3)
