@@ -36,7 +36,7 @@ def true_log_prob_2(x):
 if __name__ == "__main__":
     torch.manual_seed(0)
 
-    num_sim = 300
+    num_sim = 500
 
     prior = utils.BoxUniform(
         low=torch.tensor([-5.0, -3.0]), high=torch.tensor([5.0, 3.0])
@@ -49,7 +49,7 @@ if __name__ == "__main__":
     # density_estimator = "mdn_snpe_a"
     method = "SNPE_A"
     num_rounds = 2
-    num_components = 2
+    num_components = 3
     if method == "SNPE_A":
         density_estimator = "mdn_snpe_a"
         density_estimator = posterior_nn(model=density_estimator, num_components=num_components)
@@ -66,6 +66,9 @@ if __name__ == "__main__":
 
     # multiround training
     for r in range(num_rounds + 1):
+        if r == 1:
+            a = 3
+
         thetas, data_sim = simulate_for_sbi(
             simulator=simulator,
             proposal=proposal,
@@ -74,14 +77,12 @@ if __name__ == "__main__":
         )
         
         ax_th.scatter(x=thetas[:, 0].numpy(), y=thetas[:, 1].numpy(), label=f"round {r}", s=10)
-        # if r == 1:
-        #     plt.show()
 
         snpe.append_simulations(thetas, data_sim, proposal)
 
         if r == num_rounds:
             break
-        density_estimator = snpe.train()
+        density_estimator = snpe.train(retrain_from_scratch_each_round=False)
 
         if method == "SNPE_A":
             posterior = snpe.build_posterior(proposal=proposal, density_estimator=density_estimator,
@@ -89,7 +90,7 @@ if __name__ == "__main__":
                                              )
         else:
             posterior = snpe.build_posterior(density_estimator=density_estimator,
-                                             sample_with_mcmc=True
+                                             sample_with_mcmc=False
                                              )
 
         posterior.set_default_x(gt)
@@ -104,13 +105,6 @@ if __name__ == "__main__":
 
     n_observations = 1
     observation = torch.tensor([3.0, -1.5])[None] + 0.5 * torch.randn(n_observations, 2)
-
-    fig_obs, ax_obs = plt.subplots(1)
-    ax_obs.scatter(x=observation[:, 0], y=observation[:, 1], label="obs")
-    ax_obs.set_xlabel(r"$x_1$")
-    ax_obs.set_ylabel(r"$x_2$")
-    ax_obs.set_xlim(-10, 10)
-    ax_obs.set_ylim(-10, 10)
 
     assert isinstance(prior, utils.BoxUniform)
     bounds = [

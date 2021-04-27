@@ -63,6 +63,7 @@ class MoGFlow_SNPE_A(flows.Flow):
             else:
                 curr_prior = curr_prior.proposal
 
+        assert curr_prior is not None
         return curr_prior
 
     def log_prob(self, inputs, context=None):
@@ -116,8 +117,8 @@ class MoGFlow_SNPE_A(flows.Flow):
         # Compute the mixture components of the proposal posterior.
         logits_pp, m_pp, prec_pp = self._get_mixture_components(x)
 
-        # compute the precision_factors which represent the upper triangular matrix of the
-        # cholesky decomposition of the prec_pp
+        # Compute the precision factors which represent the upper triangular matrix
+        # of the cholesky decomposition of the prec_pp.
         prec_factors_pp = torch.cholesky(prec_pp, upper=True)
 
         # Only add the default_x if it is a single value and not a batch of data.
@@ -236,10 +237,11 @@ class MoGFlow_SNPE_A(flows.Flow):
             prec_p = self._proposal.precision_matrix
 
         else:
+            # Recursive ask for the mixture components until the prior is yielded.
             logits_p, m_p, prec_p = self._proposal._get_mixture_components(x)
 
         # Compute the MoG parameters of the proposal posterior.
-        logits_pp, m_pp, prec_pp, cov_pp = self._automatic_posterior_transformation(
+        logits_pp, m_pp, prec_pp, cov_pp = self._automatic_proposal_posterior_transformation(
             logits_p,
             m_p,
             prec_p,
@@ -308,7 +310,7 @@ class MoGFlow_SNPE_A(flows.Flow):
 
         return torch.logsumexp(weights + constant + log_det + exponent, dim=-1)
 
-    def _automatic_posterior_transformation(
+    def _automatic_proposal_posterior_transformation(
         self,
         logits_p: Tensor,
         means_p: Tensor,
