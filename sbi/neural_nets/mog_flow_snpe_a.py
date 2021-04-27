@@ -106,17 +106,17 @@ class MoGFlow_SNPE_A(flows.Flow):
             Samples from the approximate mixture of Gaussians posterior.
         """
         # Check if default_x was set previously.
-        if self.default_x is not None and torch.all(x == self.default_x):
-            # Use the previously computed mixture components of the proposal posterior.
-            logits_pp, m_pp, prec_pp = self.logits_pp, self.m_pp, self.prec_pp
-        else:
-            # Compute the mixture components of the proposal posterior.
-            logits_pp, m_pp, prec_pp = self._get_mixture_components(x)
+        # if self.default_x is not None and torch.all(x == self.default_x):
+        #     # Use the previously computed mixture components of the proposal posterior.
+        #     logits_pp, m_pp, prec_pp = self.logits_pp, self.m_pp, self.prec_pp
+        # else:
+        # Compute the mixture components of the proposal posterior.
+        logits_pp, m_pp, prec_pp = self._get_mixture_components(x)
 
-            # Only add the default_x if it is a single value and not a batch of data.
-            if x.shape[0] == 1:
-                self.default_x = x
-            self.logits_pp, self.m_pp, self.prec_pp = logits_pp, m_pp, prec_pp
+        # Only add the default_x if it is a single value and not a batch of data.
+        if x.shape[0] == 1:
+            self.default_x = x
+        self.logits_pp, self.m_pp, self.prec_pp = logits_pp, m_pp, prec_pp
 
         assert logits_pp.ndim == 2
         assert m_pp.ndim == 3
@@ -167,24 +167,23 @@ class MoGFlow_SNPE_A(flows.Flow):
             Log-probability of the proposal posterior.
         """
         # Check if default_x was set previously.
-        if self.default_x is not None and torch.all(x == self.default_x):
-            # Use the previously computed mixture components of the proposal posterior.
-            logits_pp, m_pp, prec_pp = self.logits_pp, self.m_pp, self.prec_pp
+        # if self.default_x is not None and torch.all(x == self.default_x):
+        #     # Use the previously computed mixture components of the proposal posterior.
+        #     logits_pp, m_pp, prec_pp = self.logits_pp, self.m_pp, self.prec_pp
+        #
+        #     # Expand to batch size (e.g., during evaluation)
+        #     batch_size = theta.shape[0]
+        #     logits_pp = logits_pp.repeat(batch_size, 1)
+        #     m_pp = m_pp.repeat(batch_size, 1, 1)
+        #     prec_pp = prec_pp.repeat(batch_size, 1, 1, 1)
+        # else:
+        # Compute the mixture components of the proposal posterior.
+        logits_pp, m_pp, prec_pp = self._get_mixture_components(x)
 
-            # Expand to batch size (e.g., during evaluation)
-            batch_size = theta.shape[0]
-            logits_pp = logits_pp.repeat(batch_size, 1)
-            m_pp = m_pp.repeat(batch_size, 1, 1)
-            prec_pp = prec_pp.repeat(batch_size, 1, 1, 1)
-
-        else:
-            # Compute the mixture components of the proposal posterior.
-            logits_pp, m_pp, prec_pp = self._get_mixture_components(x)
-
-            # Only add the default_x if it is a single value and not a batch of data
-            if x.shape[0] == 1:
-                self.default_x = x
-            self.logits_pp, self.m_pp, self.prec_pp = logits_pp, m_pp, prec_pp
+        # Only add the default_x if it is a single value and not a batch of data
+        if x.shape[0] == 1:
+            self.default_x = x
+        self.logits_pp, self.m_pp, self.prec_pp = logits_pp, m_pp, prec_pp
 
         # z-score theta if it z-scoring had been requested.
         theta = self._maybe_z_score_theta(theta)

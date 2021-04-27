@@ -40,6 +40,7 @@ class SNPE_A(PosteriorEstimator):
             https://arxiv.org/abs/1605.06376.
 
         Args:
+            num_components: Number of components. This number is overwritten to 1 for Algorithm 1.
             num_rounds: Total number of training rounds. For all but the last round, Algorithm 1 from [1] is executed.
                 For last round, Algorithm 2 from [1] is executed once.
             prior: A probability distribution that expresses prior knowledge about the
@@ -126,14 +127,13 @@ class SNPE_A(PosteriorEstimator):
         if self._num_rounds == 1:
             self._build_neural_net = partial(self._build_neural_net, num_components=self._num_components)
 
-        # Algorithm 1 from [1]
+        # Run Algorithm 1 from [1].
         elif self._round + 1 < self._num_rounds:
             # Wrap the function that builds the MDN such that we can make
             # sure that there is only one component when running
-            # Algorithm 1 from [1].
             self._build_neural_net = partial(self._build_neural_net, num_components=1)
 
-        # Algorithm 2 from [1]
+        # Run Algorithm 2 from [1].
         elif self._round + 1 == self._num_rounds:
             # Extend the MDN to the originally desired number of components
             self._expand_MoG()
@@ -262,14 +262,14 @@ class SNPE_A(PosteriorEstimator):
         # Increase the number of components
         self._neural_net._distribution._num_components = self._num_components
 
-        # Expand the
+        # Expand the 1-dim Ga
         for name, param in self._neural_net.named_parameters():
             if any(key in name for key in ["logits", "means", "unconstrained", "upper"]):
                 if "bias" in name:
                     param.data = param.data.repeat(self._num_components)
-                    param.data.add_(torch.randn_like(param.data) * 1e-6)
+                    param.data.add_(torch.randn_like(param.data) * 1e-4)
                     param.grad = param.grad.repeat(self._num_components)   # we could also repeat the gradient
                 elif "weight" in name:
                     param.data = param.data.repeat(self._num_components, 1)
-                    param.data.add_(torch.randn_like(param.data) * 1e-6)
+                    param.data.add_(torch.randn_like(param.data) * 1e-4)
                     param.grad = param.grad.repeat(self._num_components, 1)  # we could also repeat the gradient

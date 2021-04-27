@@ -9,10 +9,11 @@ from sbi.inference.snpe.snpe_c import SNPE_C
 from sbi.utils import posterior_nn
 from sbi.utils.user_input_checks import prepare_for_sbi
 
+P = 0.5
 
 def simulator(mu):
     # Generate samples from N(mu, sigma=0.5)
-    bern = Bernoulli(0.45)
+    bern = Bernoulli(P)
     smaple_from_mu1 = bern.sample()
 
     if smaple_from_mu1:
@@ -21,8 +22,21 @@ def simulator(mu):
         return -mu + 0.5 * torch.randn_like(mu)
 
 
+# def true_log_prob(x):
+#     return -0.45 * ((x[0] - grid_x) ** 2 + (x[1] - grid_y) ** 2) / (2 * 0.5 ** 2) *\
+#            -0.55 * ((-x[0] - grid_x) ** 2 + (-x[1] - grid_y) ** 2) / (2 * 0.5 ** 2)
+
+def true_log_prob_1(x):
+    return -P * ((x[0] - grid_x) ** 2 + (x[1] - grid_y) ** 2) / (2 * 0.5 ** 2)
+
+def true_log_prob_2(x):
+    return -(1-P) * ((-x[0] - grid_x) ** 2 + (-x[1] - grid_y) ** 2) / (2 * 0.5 ** 2)
+
+
 if __name__ == "__main__":
-    num_sim = 10000
+    torch.manual_seed(0)
+
+    num_sim = 300
 
     prior = utils.BoxUniform(
         low=torch.tensor([-5.0, -3.0]), high=torch.tensor([5.0, 3.0])
@@ -35,14 +49,14 @@ if __name__ == "__main__":
     # density_estimator = "mdn_snpe_a"
     method = "SNPE_A"
     num_rounds = 2
+    num_components = 2
     if method == "SNPE_A":
-        num_components = 2
         density_estimator = "mdn_snpe_a"
-        density_estimator = posterior_nn(model=density_estimator, num_components=2)
-        snpe = SNPE_A(2, num_rounds, prior, density_estimator)
+        density_estimator = posterior_nn(model=density_estimator, num_components=num_components)
+        snpe = SNPE_A(num_components, num_rounds, prior, density_estimator)
     else:
         density_estimator = "mdn"
-        density_estimator = posterior_nn(model=density_estimator, num_components=2)
+        density_estimator = posterior_nn(model=density_estimator, num_components=num_components)
         snpe = SNPE_C(prior, density_estimator)
 
     simulator, prior = prepare_for_sbi(simulator, prior)
@@ -55,8 +69,8 @@ if __name__ == "__main__":
         thetas, data_sim = simulate_for_sbi(
             simulator=simulator,
             proposal=proposal,
-            num_simulations=500,
-            num_workers=1,
+            num_simulations=num_sim,
+            num_workers=4,
         )
         
         ax_th.scatter(x=thetas[:, 0].numpy(), y=thetas[:, 1].numpy(), label=f"round {r}", s=10)
@@ -73,9 +87,10 @@ if __name__ == "__main__":
             posterior = snpe.build_posterior(proposal=proposal, density_estimator=density_estimator,
                                              sample_with_mcmc=False
                                              )
-            # posterior = snpe.build_posterior(proposal=proposal)  # TODO
         else:
-            posterior = snpe.build_posterior(density_estimator=density_estimator)
+            posterior = snpe.build_posterior(density_estimator=density_estimator,
+                                             sample_with_mcmc=True
+                                             )
 
         posterior.set_default_x(gt)
         proposal = posterior
@@ -130,7 +145,7 @@ if __name__ == "__main__":
             ]
         ).detach()
 
-    prob = torch.exp(log_prob - log_prob.max())
+    prob = torch.exp(log_prob) # - log_prob.max()
     plt.figure(dpi=200)
     plt.contourf(prob.reshape(*grid_x.shape), extent=bounds, origin="lower")
     plt.axis("scaled")
@@ -141,10 +156,10 @@ if __name__ == "__main__":
     plt.xlabel(r"$\mu_x$")
     plt.ylabel(r"$\mu_y$")
 
-    true_like = lambda x: -((x[0] - grid_x) ** 2 + (x[1] - grid_y) ** 2) / (2 * 0.5 ** 2)
-    log_prob = sum([true_like(observation[i]) for i in range(len(observation))])
+    log_prob_1 = sum([true_log_prob_1(observation[i]) for i in range(len(observation))])
+    log_prob_2 = sum([true_log_prob_2(observation[i]) for i in range(len(observation))])
     plt.figure(dpi=200)
-    prob = torch.exp(log_prob - log_prob.max())
+    prob = torch.exp(log_prob_1) + torch.exp(log_prob_2)
     plt.contourf(prob.reshape(*grid_x.shape), extent=bounds, origin="lower")
     plt.axis("scaled")
     plt.title("Posterior with\nanalytic likelihood")
