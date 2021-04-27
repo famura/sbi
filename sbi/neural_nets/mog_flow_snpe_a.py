@@ -1,7 +1,6 @@
 # This file is part of sbi, a toolkit for simulation-based inference. sbi is licensed
 # under the Affero General Public License v3, see <https://www.gnu.org/licenses/>.
 
-import math
 from typing import Union
 from warnings import warn
 
@@ -18,7 +17,13 @@ import sbi.utils as utils
 class MoGFlow_SNPE_A(flows.Flow):
     """
     A wrapper for nflow's `Flow` class to enable a different log prob calculation
-    sampling strategy for training and testing, tailored to SNPE-A
+    sampling strategy for training and testing, tailored to SNPE-A [1]
+
+    [1] _Fast epsilon-free Inference of Simulation Models with Bayesian Conditional
+        Density Estimation_, Papamakarios et al., NeurIPS 2016,
+        https://arxiv.org/abs/1605.06376.
+    [2] _Automatic Posterior Transformation for Likelihood-free Inference_,
+        Greenberg et al., ICML 2019, https://arxiv.org/abs/1905.07488.
     """
 
     def __init__(self, transform, distribution, embedding_net=None):
@@ -211,7 +216,7 @@ class MoGFlow_SNPE_A(flows.Flow):
         theta = self._maybe_z_score_theta(theta)
 
         # Compute the log_prob of theta under the product.
-        log_prob_proposal_posterior = self._mog_log_prob(
+        log_prob_proposal_posterior = utils.mog_log_prob(
             theta,
             logits_pp,
             m_pp,
@@ -253,7 +258,12 @@ class MoGFlow_SNPE_A(flows.Flow):
             logits_p, m_p, prec_p = self._proposal._get_mixture_components(x)
 
         # Compute the MoG parameters of the proposal posterior.
-        logits_pp, m_pp, prec_pp, cov_pp = self._automatic_proposal_posterior_transformation(
+        (
+            logits_pp,
+            m_pp,
+            prec_pp,
+            cov_pp,
+        ) = self._automatic_proposal_posterior_transformation(
             logits_p,
             m_p,
             prec_p,
@@ -275,52 +285,6 @@ class MoGFlow_SNPE_A(flows.Flow):
 
         msg = f"NaN/Inf present in {description}."
         assert torch.isfinite(quantity).all(), msg
-
-    @staticmethod
-    def _mog_log_prob(
-        theta: Tensor,
-        logits_pp: Tensor,
-        means_pp: Tensor,
-        precisions_pp: Tensor,
-    ) -> Tensor:
-        r"""
-        # TODO move this to sbi (utils), and also do that for SNPE-C
-        .. note::
-            Hard copy!
-
-        Returns the log-probability of parameter sets $\theta$ under a mixture of Gaussians.
-
-        Note that the mixture can have different logits, means, covariances for any theta in
-        the batch. This is because these values were computed from a batch of $x$ (and the
-        $x$ in the batch are not the same).
-
-        This code is similar to the code of mdn.py in pyknos, but it does not use
-        log(det(Cov)) = -2*sum(log(diag(L))), L being Cholesky of Precision. Instead, it
-        just computes log(det(Cov)). Also, it uses the above-defined helper
-        `_batched_vmv()`.
-
-        Args:
-            theta: Parameters at which to evaluate the mixture.
-            logits_pp: (Unnormalized) mixture components.
-            means_pp: Means of all mixture components. Shape
-                (batch_dim, num_components, theta_dim).
-            precisions_pp: Precisions of all mixtures. Shape
-                (batch_dim, num_components, theta_dim, theta_dim).
-
-        Returns: The log-probability.
-        """
-
-        _, _, output_dim = means_pp.size()
-        theta = theta.view(-1, 1, output_dim)
-
-        # Split up evaluation into parts.
-        weights = logits_pp - torch.logsumexp(logits_pp, dim=-1, keepdim=True)
-        constant = -(output_dim / 2.0) * torch.log(torch.tensor([2 * math.pi]))
-        log_det = 0.5 * torch.log(torch.det(precisions_pp))
-        theta_minus_mean = theta.expand_as(means_pp) - means_pp
-        exponent = -0.5 * utils.batched_mixture_vmv(precisions_pp, theta_minus_mean)
-
-        return torch.logsumexp(weights + constant + log_det + exponent, dim=-1)
 
     def _automatic_proposal_posterior_transformation(
         self,
@@ -510,7 +474,9 @@ class MoGFlow_SNPE_A(flows.Flow):
                 eig_p = torch.symeig(p, eigenvectors=False).eigenvalues
                 assert (
                     eig_p > 0
-                ).all(), "The precision matrix of the proposal is not positive definite!"
+                ).all(), (
+                    "The precision matrix of the proposal is not positive definite!"
+                )
         for batches in precisions_d:
             for d in batches:
                 eig_d = torch.symeig(d, eigenvectors=False).eigenvalues
@@ -523,7 +489,9 @@ class MoGFlow_SNPE_A(flows.Flow):
 
         precisions_pp = precisions_d_rep - precisions_p_rep  # see Appendix C in [1]
         if isinstance(self._maybe_z_scored_prior, MultivariateNormal):
-            precisions_pp += self._maybe_z_scored_prior.precision_matrix  # see Appendix C in [1]
+            precisions_pp += (
+                self._maybe_z_scored_prior.precision_matrix
+            )  # see Appendix C in [1]
 
         # Check if positive definite
         for idx_batch, batches in enumerate(precisions_pp):
@@ -537,8 +505,12 @@ class MoGFlow_SNPE_A(flows.Flow):
                     precisions_pp[idx_batch, idx_comp] = pp - torch.eye(pp.shape[0]) * (
                         min(eig_pp) - 1e-6
                     )
-                    precisions_pp[idx_batch, idx_comp] = torch.clamp(precisions_pp[idx_batch, idx_comp], min=1e-6)
-                    warn("The precision matrix of a proposal posterior is not positive definite")
+                    precisions_pp[idx_batch, idx_comp] = torch.clamp(
+                        precisions_pp[idx_batch, idx_comp], min=1e-6
+                    )
+                    warn(
+                        "The precision matrix of a proposal posterior is not positive definite"
+                    )
                     # print(torch.symeig(precisions_pp[idx_batch, idx_comp],eigenvectors=False).eigenvalues.numpy())
                     # print("-"*5)
 
@@ -588,7 +560,9 @@ class MoGFlow_SNPE_A(flows.Flow):
         prec_m_prod_d_rep = prec_m_prod_d.repeat(1, num_comps_p, 1)
 
         # Means = C_ik * (-P_k * m_k + P_i * m_i + P_o * m_o).
-        summed_cov_m_prod_rep = prec_m_prod_d_rep - prec_m_prod_p_rep  # see Appendix C in [1]
+        summed_cov_m_prod_rep = (
+            prec_m_prod_d_rep - prec_m_prod_p_rep
+        )  # see Appendix C in [1]
         if isinstance(self._maybe_z_scored_prior, MultivariateNormal):
             summed_cov_m_prod_rep += self.prec_m_prod_prior  # see Appendix C in [1]
 
@@ -612,12 +586,6 @@ class MoGFlow_SNPE_A(flows.Flow):
         Return the component weights (i.e. logits) of the proposal posterior.
 
         mu_i.T * P_i * mu_i
-
-        [1] _Fast epsilon-free Inference of Simulation Models with Bayesian Conditional
-            Density Estimation_, Papamakarios et al., NeurIPS 2016,
-            https://arxiv.org/abs/1605.06376.
-        [2] _Automatic Posterior Transformation for Likelihood-free Inference_,
-            Greenberg et al., ICML 2019, https://arxiv.org/abs/1905.07488.
 
         Args:
             means_pp: Means of the proposal posterior.
@@ -655,9 +623,9 @@ class MoGFlow_SNPE_A(flows.Flow):
         )
         logdet_covariances_d_rep = logdet_covariances_d.repeat(1, num_comps_p)
 
-        log_sqrt_det_ratio = 0.5 * (
+        log_sqrt_det_ratio = 0.5 * (  # eq (26) in [1]
             logdet_covariances_pp + logdet_covariances_p_rep - logdet_covariances_d_rep
-        )  # see Appendix C in [1]
+        )
 
         # Compute for proposal, density estimator, and proposal posterior:
         exponent_p = utils.batched_mixture_vmv(
@@ -674,8 +642,8 @@ class MoGFlow_SNPE_A(flows.Flow):
         exponent_p_rep = exponent_p.repeat_interleave(num_comps_d, dim=1)
         exponent_d_rep = exponent_d.repeat(1, num_comps_p)
         exponent = -0.5 * (
-            exponent_p_rep - exponent_d_rep - exponent_pp
-        )  # changed sign
+            exponent_p_rep - exponent_d_rep - exponent_pp  # eq (26) in [1]
+        )
 
         logits_pp = logit_factors + log_sqrt_det_ratio + exponent
 
