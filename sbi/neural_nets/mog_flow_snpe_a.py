@@ -12,6 +12,7 @@ from pyknos.nflows.transforms import CompositeTransform
 from pyknos.mdn.mdn import MultivariateGaussianMDN
 
 import sbi.utils as utils
+from sbi.utils import torchutils
 
 
 class MoGFlow_SNPE_A(flows.Flow):
@@ -113,6 +114,10 @@ class MoGFlow_SNPE_A(flows.Flow):
         # Compute the mixture components of the proposal posterior.
         logits_pp, m_pp, prec_pp = self._get_mixture_components(x)
 
+        # compute the precision_factors which represent the upper triangular matrix of the
+        # cholesky decomposition of the prec_pp
+        prec_factors_pp = torch.cholesky(prec_pp, upper=True)
+
         # Only add the default_x if it is a single value and not a batch of data.
         if x.shape[0] == 1:
             self.default_x = x
@@ -121,6 +126,7 @@ class MoGFlow_SNPE_A(flows.Flow):
         assert logits_pp.ndim == 2
         assert m_pp.ndim == 3
         assert prec_pp.ndim == 4
+        assert prec_factors_pp.ndim == 4
 
         # Replicate to use batched sampling from pyknos.
         if batch_size is not None and batch_size > 1:
@@ -129,10 +135,24 @@ class MoGFlow_SNPE_A(flows.Flow):
             prec_pp = prec_pp.repeat(batch_size, 1, 1, 1)
 
         # Get (optionally z-scored) MoG samples.
-        theta = MultivariateGaussianMDN.sample_mog(num_samples, logits_pp, m_pp, prec_pp)
+        theta = MultivariateGaussianMDN.sample_mog(num_samples, logits_pp, m_pp, prec_factors_pp)
 
         if self.z_score_theta:
             theta, _ = self._transform.inverse(theta)  # 2dn output is the log abs det
+
+        # embedded_context = self._embedding_net(x)
+        # if embedded_context is not None:
+        #     # Merge the context dimension with sample dimension in order to apply the transform.
+        #     noise = torchutils.merge_leading_dims(theta, num_dims=2)
+        #     embedded_context = torchutils.repeat_rows(
+        #         embedded_context, num_reps=num_samples
+        #     )
+        #
+        #     theta, _ = self._transform.inverse(noise, context=embedded_context)
+        #
+        #     if embedded_context is not None:
+        #         # Split the context dimension from sample dimension.
+        #         theta = torchutils.split_leading_dim(theta, shape=[-1, num_samples])
 
         return theta
 

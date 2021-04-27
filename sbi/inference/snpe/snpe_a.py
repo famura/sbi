@@ -267,9 +267,9 @@ class SNPE_A(PosteriorEstimator):
             if any(key in name for key in ["logits", "means", "unconstrained", "upper"]):
                 if "bias" in name:
                     param.data = param.data.repeat(self._num_components)
-                    param.data.add_(torch.randn_like(param.data) * 1e-4)
+                    param.data.add_(torch.randn_like(param.data) * 1e-6)
                     param.grad = param.grad.repeat(self._num_components)   # we could also repeat the gradient
                 elif "weight" in name:
                     param.data = param.data.repeat(self._num_components, 1)
-                    param.data.add_(torch.randn_like(param.data) * 1e-4)
+                    param.data.add_(torch.randn_like(param.data) * 1e-6)
                     param.grad = param.grad.repeat(self._num_components, 1)  # we could also repeat the gradient
