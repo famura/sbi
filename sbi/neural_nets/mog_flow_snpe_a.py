@@ -3,6 +3,7 @@
 
 import math
 from typing import Union
+from warnings import warn
 
 import torch
 from pyknos.mdn.mdn import MultivariateGaussianMDN
@@ -222,6 +223,16 @@ class MoGFlow_SNPE_A(flows.Flow):
         return log_prob_proposal_posterior
 
     def _get_mixture_components(self, x: Tensor):
+        """
+        Compute the mixture components of the posterior given the current density
+        estimator and the proposal.
+
+        Args:
+            x: Conditioning context for posterior.
+
+        Returns:
+            Mixture components of the posterior.
+        """
         # Evaluate the density estimator.
         encoded_x = self._embedding_net(x)
         dist = self._distribution  # defined to avoid black formatting.
@@ -229,6 +240,7 @@ class MoGFlow_SNPE_A(flows.Flow):
         norm_logits_d = logits_d - torch.logsumexp(logits_d, dim=-1, keepdim=True)
 
         if isinstance(self._proposal, utils.BoxUniform):
+            # Uniform prior is uninformative.
             return norm_logits_d, m_d, prec_d
 
         elif isinstance(self._proposal, MultivariateNormal):
@@ -474,8 +486,11 @@ class MoGFlow_SNPE_A(flows.Flow):
         Return the precisions and covariances of the proposal posterior.
 
         C_ik = (P_i - P_k + P_o)^{-1}.
+        (matching the notation of Appendix A.1 in [2])
 
-        See the notation of Appendix A.1 in [2].
+        [1] _Fast epsilon-free Inference of Simulation Models with Bayesian Conditional
+            Density Estimation_, Papamakarios et al., NeurIPS 2016,
+            https://arxiv.org/abs/1605.06376.
         [2] _Automatic Posterior Transformation for Likelihood-free Inference_,
             Greenberg et al., ICML 2019, https://arxiv.org/abs/1905.07488.
 
@@ -489,42 +504,43 @@ class MoGFlow_SNPE_A(flows.Flow):
         num_comps_p = precisions_p.shape[1]
         num_comps_d = precisions_d.shape[1]
 
-        # Check if positive definite
+        # Check if precision matrices are positive definite.
         for batches in precisions_p:
             for p in batches:
                 eig_p = torch.symeig(p, eigenvectors=False).eigenvalues
                 assert (
                     eig_p > 0
-                ).all(), "The precision matrix of the proposal is not positive definite"
+                ).all(), "The precision matrix of the proposal is not positive definite!"
         for batches in precisions_d:
             for d in batches:
                 eig_d = torch.symeig(d, eigenvectors=False).eigenvalues
                 assert (
                     eig_d > 0
-                ).all(), "The precision matrix of the density estimator is not positive definite"
+                ).all(), "The precision matrix of the density estimator is not positive definite!"
 
         precisions_p_rep = precisions_p.repeat_interleave(num_comps_d, dim=1)
         precisions_d_rep = precisions_d.repeat(1, num_comps_p, 1, 1)
 
-        precisions_pp = precisions_d_rep - precisions_p_rep  # changed sign
+        precisions_pp = precisions_d_rep - precisions_p_rep  # see Appendix C in [1]
         if isinstance(self._maybe_z_scored_prior, MultivariateNormal):
-            precisions_pp += self._maybe_z_scored_prior.precision_matrix  # changed sign
+            precisions_pp += self._maybe_z_scored_prior.precision_matrix  # see Appendix C in [1]
 
         # Check if positive definite
         for idx_batch, batches in enumerate(precisions_pp):
             for idx_comp, pp in enumerate(batches):
                 eig_pp = torch.symeig(pp, eigenvectors=False).eigenvalues
-                # print(eig_pp.numpy())
+                # assert (
+                #     eig_pp > 0
+                # ).all(), "The precision matrix of a proposal posterior is not positive definite!"
                 if not (eig_pp > 0).all():
                     # Shift the eigenvalues to be at minimum 1e-6
                     precisions_pp[idx_batch, idx_comp] = pp - torch.eye(pp.shape[0]) * (
                         min(eig_pp) - 1e-6
                     )
-                    # precisions_pp[idx_batch, idx_comp] = torch.clamp(precisions_pp[idx_batch, idx_comp], min=1e-6)
-                    # print("The precision matrix of a proposal posterior is not positive definite")
+                    precisions_pp[idx_batch, idx_comp] = torch.clamp(precisions_pp[idx_batch, idx_comp], min=1e-6)
+                    warn("The precision matrix of a proposal posterior is not positive definite")
                     # print(torch.symeig(precisions_pp[idx_batch, idx_comp],eigenvectors=False).eigenvalues.numpy())
                     # print("-"*5)
-        # print("-"*20)
 
         covariances_pp = torch.inverse(precisions_pp)
 
@@ -542,8 +558,11 @@ class MoGFlow_SNPE_A(flows.Flow):
         Return the means of the proposal posterior.
 
         m_ik = C_ik * (-P_k * m_k + P_i * m_i + P_o * m_o).
+        (matching the notation of Appendix A.1 in [2])
 
-        See the notation of Appendix A.1 in [2].
+        [1] _Fast epsilon-free Inference of Simulation Models with Bayesian Conditional
+            Density Estimation_, Papamakarios et al., NeurIPS 2016,
+            https://arxiv.org/abs/1605.06376.
         [2] _Automatic Posterior Transformation for Likelihood-free Inference_,
             Greenberg et al., ICML 2019, https://arxiv.org/abs/1905.07488.
 
@@ -569,9 +588,9 @@ class MoGFlow_SNPE_A(flows.Flow):
         prec_m_prod_d_rep = prec_m_prod_d.repeat(1, num_comps_p, 1)
 
         # Means = C_ik * (-P_k * m_k + P_i * m_i + P_o * m_o).
-        summed_cov_m_prod_rep = prec_m_prod_d_rep - prec_m_prod_p_rep  # changed sign
+        summed_cov_m_prod_rep = prec_m_prod_d_rep - prec_m_prod_p_rep  # see Appendix C in [1]
         if isinstance(self._maybe_z_scored_prior, MultivariateNormal):
-            summed_cov_m_prod_rep += self.prec_m_prod_prior  # changed sign
+            summed_cov_m_prod_rep += self.prec_m_prod_prior  # see Appendix C in [1]
 
         means_pp = utils.batched_mixture_mv(covariances_pp, summed_cov_m_prod_rep)
 
@@ -592,6 +611,14 @@ class MoGFlow_SNPE_A(flows.Flow):
         """
         Return the component weights (i.e. logits) of the proposal posterior.
 
+        mu_i.T * P_i * mu_i
+
+        [1] _Fast epsilon-free Inference of Simulation Models with Bayesian Conditional
+            Density Estimation_, Papamakarios et al., NeurIPS 2016,
+            https://arxiv.org/abs/1605.06376.
+        [2] _Automatic Posterior Transformation for Likelihood-free Inference_,
+            Greenberg et al., ICML 2019, https://arxiv.org/abs/1905.07488.
+
         Args:
             means_pp: Means of the proposal posterior.
             precisions_pp: Precision matrices of the proposal posterior.
@@ -605,13 +632,14 @@ class MoGFlow_SNPE_A(flows.Flow):
 
         Returns: Component weights of the proposal posterior. L*K terms.
         """
+
         num_comps_p = precisions_p.shape[1]
         num_comps_d = precisions_d.shape[1]
 
         # Compute log(alpha_i * beta_j)
         logits_p_rep = logits_p.repeat_interleave(num_comps_d, dim=1)
         logits_d_rep = logits_d.repeat(1, num_comps_p)
-        logit_factors = logits_d_rep - logits_p_rep  # changed sign
+        logit_factors = logits_d_rep - logits_p_rep  # see Appendix C in [1]
 
         # Compute sqrt(det()/(det()*det()))
         logdet_covariances_pp = torch.logdet(covariances_pp)
@@ -629,19 +657,18 @@ class MoGFlow_SNPE_A(flows.Flow):
 
         log_sqrt_det_ratio = 0.5 * (
             logdet_covariances_pp + logdet_covariances_p_rep - logdet_covariances_d_rep
-        )  # changed sign
+        )  # see Appendix C in [1]
 
         # Compute for proposal, density estimator, and proposal posterior:
-        # mu_i.T * P_i * mu_i
         exponent_p = utils.batched_mixture_vmv(
-            precisions_p, means_p
-        )  # m_0 in eq (26) in [1]
+            precisions_p, means_p  # m_0 in eq (26) in [1]
+        )
         exponent_d = utils.batched_mixture_vmv(
-            precisions_d, means_d
-        )  # m_k in eq (26) in [1]
+            precisions_d, means_d  # m_k in eq (26) in [1]
+        )
         exponent_pp = utils.batched_mixture_vmv(
-            precisions_pp, means_pp
-        )  # m^\prime_k in eq (26) in [1]
+            precisions_pp, means_pp  # m^\prime_k in eq (26) in [1]
+        )
 
         # Extend proposal and density estimator exponents to get LK terms.
         exponent_p_rep = exponent_p.repeat_interleave(num_comps_d, dim=1)

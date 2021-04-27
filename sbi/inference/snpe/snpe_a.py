@@ -268,7 +268,7 @@ class SNPE_A(PosteriorEstimator):
         """
         return self._neural_net.log_prob(theta, x)
 
-    def _expand_MoG(self, eps: float = 1e-6):
+    def _expand_MoG(self, eps: float = 1e-4):
         """
         TODO
 
