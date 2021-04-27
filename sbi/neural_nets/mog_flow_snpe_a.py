@@ -106,6 +106,7 @@ class MoGFlow_SNPE_A(flows.Flow):
         self, num_samples, x: Tensor, batch_size: int
     ) -> Tensor:
         """
+        Sample from the approximate posterior.
 
         Args:
             num_samples: Desired number of samples.
@@ -222,9 +223,7 @@ class MoGFlow_SNPE_A(flows.Flow):
             m_pp,
             prec_pp,
         )
-        MoGFlow_SNPE_A._assert_all_finite(
-            log_prob_proposal_posterior, "proposal posterior eval"
-        )
+        utils.assert_all_finite(log_prob_proposal_posterior, "proposal posterior eval")
         return log_prob_proposal_posterior
 
     def _get_mixture_components(self, x: Tensor):
@@ -272,19 +271,6 @@ class MoGFlow_SNPE_A(flows.Flow):
             prec_d,
         )
         return logits_pp, m_pp, prec_pp
-
-    @staticmethod
-    def _assert_all_finite(quantity: Tensor, description: str = "tensor") -> None:
-        """
-        # TODO move this to sbi (utils), and also do that for NeuralInference
-        .. note::
-            Hard copy!
-
-        Raise if tensor quantity contains any NaN or Inf element.
-        """
-
-        msg = f"NaN/Inf present in {description}."
-        assert torch.isfinite(quantity).all(), msg
 
     def _automatic_proposal_posterior_transformation(
         self,

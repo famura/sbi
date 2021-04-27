@@ -11,6 +11,7 @@ from sbi.utils.user_input_checks import prepare_for_sbi
 
 P = 0.5
 
+
 def simulator(mu):
     # Generate samples from N(mu, sigma=0.5)
     bern = Bernoulli(P)
@@ -26,11 +27,13 @@ def simulator(mu):
 #     return -0.45 * ((x[0] - grid_x) ** 2 + (x[1] - grid_y) ** 2) / (2 * 0.5 ** 2) *\
 #            -0.55 * ((-x[0] - grid_x) ** 2 + (-x[1] - grid_y) ** 2) / (2 * 0.5 ** 2)
 
+
 def true_log_prob_1(x):
     return -P * ((x[0] - grid_x) ** 2 + (x[1] - grid_y) ** 2) / (2 * 0.5 ** 2)
 
+
 def true_log_prob_2(x):
-    return -(1-P) * ((-x[0] - grid_x) ** 2 + (-x[1] - grid_y) ** 2) / (2 * 0.5 ** 2)
+    return -(1 - P) * ((-x[0] - grid_x) ** 2 + (-x[1] - grid_y) ** 2) / (2 * 0.5 ** 2)
 
 
 if __name__ == "__main__":
@@ -47,21 +50,25 @@ if __name__ == "__main__":
     gt = torch.tensor([3.0, -1.5])
 
     # density_estimator = "mdn_snpe_a"
-    method = "SNPE_A"
+    method = "SNPE_C"
     num_rounds = 2
     num_components = 3
     if method == "SNPE_A":
         density_estimator = "mdn_snpe_a"
-        density_estimator = posterior_nn(model=density_estimator, num_components=num_components)
+        density_estimator = posterior_nn(
+            model=density_estimator, num_components=num_components
+        )
         snpe = SNPE_A(num_components, num_rounds, prior, density_estimator)
     else:
         density_estimator = "mdn"
-        density_estimator = posterior_nn(model=density_estimator, num_components=num_components)
+        density_estimator = posterior_nn(
+            model=density_estimator, num_components=num_components
+        )
         snpe = SNPE_C(prior, density_estimator)
 
     simulator, prior = prepare_for_sbi(simulator, prior)
     proposal = prior
-    
+
     fig_th, ax_th = plt.subplots(1)
 
     # multiround training
@@ -75,8 +82,10 @@ if __name__ == "__main__":
             num_simulations=num_sim,
             num_workers=1,
         )
-        
-        ax_th.scatter(x=thetas[:, 0].numpy(), y=thetas[:, 1].numpy(), label=f"round {r}", s=10)
+
+        ax_th.scatter(
+            x=thetas[:, 0].numpy(), y=thetas[:, 1].numpy(), label=f"round {r}", s=10
+        )
 
         snpe.append_simulations(thetas, data_sim, proposal)
 
@@ -85,13 +94,15 @@ if __name__ == "__main__":
         density_estimator = snpe.train(retrain_from_scratch_each_round=False)
 
         if method == "SNPE_A":
-            posterior = snpe.build_posterior(proposal=proposal, density_estimator=density_estimator,
-                                             sample_with_mcmc=False
-                                             )
+            posterior = snpe.build_posterior(
+                proposal=proposal,
+                density_estimator=density_estimator,
+                sample_with_mcmc=False,
+            )
         else:
-            posterior = snpe.build_posterior(density_estimator=density_estimator,
-                                             sample_with_mcmc=False
-                                             )
+            posterior = snpe.build_posterior(
+                density_estimator=density_estimator, sample_with_mcmc=False
+            )
 
         posterior.set_default_x(gt)
         proposal = posterior
@@ -124,7 +135,10 @@ if __name__ == "__main__":
 
     if "SNPE" in method:
         log_prob = sum(
-            [posterior.log_prob(grid, observation[i], norm_posterior=False) for i in range(len(observation))]
+            [
+                posterior.log_prob(grid, observation[i], norm_posterior=False)
+                for i in range(len(observation))
+            ]
         )
     else:
         log_prob = sum(
@@ -140,7 +154,7 @@ if __name__ == "__main__":
             ]
         ).detach()
 
-    prob = torch.exp(log_prob) # - log_prob.max()
+    prob = torch.exp(log_prob)  # - log_prob.max()
     plt.figure(dpi=200)
     plt.contourf(prob.reshape(*grid_x.shape), extent=bounds, origin="lower")
     plt.axis("scaled")

@@ -337,13 +337,13 @@ class SNPE_C(PosteriorEstimator):
 
         # Evaluate large batch giving (batch_size * num_atoms) log prob posterior evals.
         log_prob_posterior = self._neural_net.log_prob(atomic_theta, repeated_x)
-        self._assert_all_finite(log_prob_posterior, "posterior eval")
+        utils.assert_all_finite(log_prob_posterior, "posterior eval")
         log_prob_posterior = log_prob_posterior.reshape(batch_size, num_atoms)
 
         # Get (batch_size * num_atoms) log prob prior evals.
         log_prob_prior = self._prior.log_prob(atomic_theta)
         log_prob_prior = log_prob_prior.reshape(batch_size, num_atoms)
-        self._assert_all_finite(log_prob_prior, "prior eval")
+        utils.assert_all_finite(log_prob_prior, "prior eval")
 
         # Compute unnormalized proposal posterior.
         unnormalized_log_prob = log_prob_posterior - log_prob_prior
@@ -352,7 +352,7 @@ class SNPE_C(PosteriorEstimator):
         log_prob_proposal_posterior = unnormalized_log_prob[:, 0] - torch.logsumexp(
             unnormalized_log_prob, dim=-1
         )
-        self._assert_all_finite(log_prob_proposal_posterior, "proposal posterior eval")
+        utils.assert_all_finite(log_prob_proposal_posterior, "proposal posterior eval")
 
         # XXX This evaluates the posterior on _all_ prior samples
         if self._use_combined_loss:
@@ -418,7 +418,7 @@ class SNPE_C(PosteriorEstimator):
 
         # Compute the log_prob of theta under the product.
         log_prob_proposal_posterior = utils.mog_log_prob(theta, logits_pp, m_pp, prec_pp)
-        self._assert_all_finite(log_prob_proposal_posterior, "proposal posterior eval")
+        utils.assert_all_finite(log_prob_proposal_posterior, "proposal posterior eval")
 
         return log_prob_proposal_posterior
 
