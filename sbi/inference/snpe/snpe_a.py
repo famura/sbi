@@ -1,5 +1,6 @@
 # This file is part of sbi, a toolkit for simulation-based inference. sbi is licensed
 # under the Affero General Public License v3, see <https://www.gnu.org/licenses/>.
+
 import warnings
 from copy import deepcopy
 from functools import partial
@@ -141,10 +142,12 @@ class SNPE_A(PosteriorEstimator):
         # Run Algorithm 2 from [1].
         elif self._round + 1 == self._num_rounds:
             # Now switch to the specified number of components.
-            self._build_neural_net = partial(self._build_neural_net, num_components=self._num_components)
+            self._build_neural_net = partial(
+                self._build_neural_net, num_components=self._num_components
+            )
 
             # Extend the MDN to the originally desired number of components.
-            self._expand_MoG()
+            self._expand_mog()
 
         else:
             warnings.warn(
@@ -268,11 +271,17 @@ class SNPE_A(PosteriorEstimator):
         """
         return self._neural_net.log_prob(theta, x)
 
-    def _expand_MoG(self, eps: float = 1e-4):
+    def _expand_mog(
+        self, eps: float = 1e-5
+    ):
         """
-        TODO
+        Replicate a singe Gaussian trained with Algorithm 1 before continuing
+        with Algorithm 2. The weights and biases of the associated MDN layers
+        are repeated `num_components` times, slightly perturbed to break the
+        symmetry such that the gradients in the subsequent training are not
+        all identical.
 
-        :param eps:
+        :param eps: Standard deviation for the random perturbation.
         """
         assert isinstance(self._neural_net._distribution, MultivariateGaussianMDN)
 
@@ -287,10 +296,8 @@ class SNPE_A(PosteriorEstimator):
                 if "bias" in name:
                     param.data = param.data.repeat(self._num_components)
                     param.data.add_(torch.randn_like(param.data) * eps)
-                    param.grad = None   # we could also repeat the gradient
-                    # param.grad = param.grad.repeat(self._num_components)
+                    param.grad = None  # let autograd construct a new gradient
                 elif "weight" in name:
                     param.data = param.data.repeat(self._num_components, 1)
                     param.data.add_(torch.randn_like(param.data) * eps)
-                    param.grad = None  # we could also repeat the gradient
-                    # param.grad = param.grad.repeat(self._num_components, 1)
+                    param.grad = None  # let autograd construct a new gradient
