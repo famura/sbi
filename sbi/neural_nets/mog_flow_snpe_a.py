@@ -12,6 +12,7 @@ from torch import Tensor
 from torch.distributions import MultivariateNormal
 
 import sbi.utils as utils
+from sbi.utils import torchutils
 
 
 class MoGFlow_SNPE_A(flows.Flow):
@@ -26,8 +27,13 @@ class MoGFlow_SNPE_A(flows.Flow):
         Greenberg et al., ICML 2019, https://arxiv.org/abs/1905.07488.
     """
 
-    def __init__(self, transform, distribution, embedding_net=None,
-                 allow_precision_correction: bool = True):
+    def __init__(
+        self,
+        transform,
+        distribution,
+        embedding_net=None,
+        allow_precision_correction: bool = False,
+    ):
         """Constructor.
 
         Args:
@@ -52,20 +58,22 @@ class MoGFlow_SNPE_A(flows.Flow):
     def proposal(
         self,
     ) -> Union["utils.BoxUniform", MultivariateNormal, "MoGFlow_SNPE_A"]:
-        """ Get the proposal of the previous round. """
+        """Get the proposal of the previous round."""
         return self._proposal
 
     def set_proposal(
         self, proposal: Union["utils.BoxUniform", MultivariateNormal, "MoGFlow_SNPE_A"]
     ):
-        """ Set the proposal of the previous round. """
+        """Set the proposal of the previous round."""
         self._proposal = proposal
 
         # Take care of z-scoring, pre-compute and store prior terms.
         self._set_state_for_mog_proposal()
 
-    def _get_first_prior_from_proposal(self):
-        """ Iterate a possible chain of proposals. """
+    def _get_first_prior_from_proposal(
+        self,
+    ) -> Union[utils.BoxUniform, MultivariateNormal, "MoGFlow_SNPE_A"]:
+        """Iterate a possible chain of proposals."""
         curr_prior = self._proposal
 
         while curr_prior:
@@ -83,19 +91,34 @@ class MoGFlow_SNPE_A(flows.Flow):
             # in this instance. This is the case if we are in the training
             # loop, i.e. this MoGFlow_SNPE_A instance is not an attribute of a
             # DirectPosterior instance.
-            return super().log_prob(inputs, context)  # q_phi from eq. (3) in [1]
+            return super().log_prob(inputs, context)  # q_phi from eq (3) in [1]
+
+        elif isinstance(self._proposal, (utils.BoxUniform, MultivariateNormal)):
+            # No importance re-weighting is needed if the proposal prior is the prior
+            return super().log_prob(inputs, context)
 
         else:
-            # No importance re-weighting is needed if the proposal prior is the prior
-            if isinstance(self._proposal, (utils.BoxUniform, MultivariateNormal)):
-                return super().log_prob(inputs, context)
-
             # When we want to compute the approx. posterior, a proposal prior \tilde{p}
             # has already been observed. To analytically calculate the log-prob of the
             # Gaussian, we first need to compute the mixture components.
-            return self._log_prob_approx_posterior_mog(
-                inputs, context
-            )  # \hat{p} from eq. (3) in [1]
+
+            # Compute the mixture components of the proposal posterior.
+            logits_pp, m_pp, prec_pp = self._get_mixture_components(context)
+
+            # z-score theta if it z-scoring had been requested.
+            theta = self._maybe_z_score_theta(inputs)
+
+            # Compute the log_prob of theta under the product.
+            log_prob_proposal_posterior = utils.mog_log_prob(
+                theta,
+                logits_pp,
+                m_pp,
+                prec_pp,
+            )
+            utils.assert_all_finite(
+                log_prob_proposal_posterior, "proposal posterior eval"
+            )
+            return log_prob_proposal_posterior  # \hat{p} from eq (3) in [1]
 
     def sample(self, num_samples, context=None, batch_size=None) -> Tensor:
         if self._proposal is None:
@@ -118,7 +141,7 @@ class MoGFlow_SNPE_A(flows.Flow):
     def _sample_approx_posterior_mog(
         self, num_samples, x: Tensor, batch_size: int
     ) -> Tensor:
-        """
+        r"""
         Sample from the approximate posterior.
 
         Args:
@@ -129,11 +152,7 @@ class MoGFlow_SNPE_A(flows.Flow):
         Returns:
             Samples from the approximate mixture of Gaussians posterior.
         """
-        # Check if default_x was set previously.
-        # if self.default_x is not None and torch.all(x == self.default_x):
-        #     # Use the previously computed mixture components of the proposal posterior.
-        #     logits_pp, m_pp, prec_pp = self.logits_pp, self.m_pp, self.prec_pp
-        # else:
+
         # Compute the mixture components of the proposal posterior.
         logits_pp, m_pp, prec_pp = self._get_mixture_components(x)
 
@@ -162,82 +181,22 @@ class MoGFlow_SNPE_A(flows.Flow):
             num_samples, logits_pp, m_pp, prec_factors_pp
         )
 
-        if self.z_score_theta:
-            theta, _ = self._transform.inverse(theta)  # 2dn output is the log abs det
+        embedded_context = self._embedding_net(x)
+        if embedded_context is not None:
+            # Merge the context dimension with sample dimension in order to
+            # apply the transform.
+            noise = torchutils.merge_leading_dims(theta, num_dims=2)
+            embedded_context = torchutils.repeat_rows(
+                embedded_context, num_reps=num_samples
+            )
 
-        # embedded_context = self._embedding_net(x)
-        # if embedded_context is not None:
-        #     # Merge the context dimension with sample dimension in order to apply the transform.
-        #     noise = torchutils.merge_leading_dims(theta, num_dims=2)
-        #     embedded_context = torchutils.repeat_rows(
-        #         embedded_context, num_reps=num_samples
-        #     )
-        #
-        #     theta, _ = self._transform.inverse(noise, context=embedded_context)
-        #
-        #     if embedded_context is not None:
-        #         # Split the context dimension from sample dimension.
-        #         theta = torchutils.split_leading_dim(theta, shape=[-1, num_samples])
+        theta, _ = self._transform.inverse(noise, context=embedded_context)
+
+        if embedded_context is not None:
+            # Split the context dimension from sample dimension.
+            theta = torchutils.split_leading_dim(theta, shape=[-1, num_samples])
 
         return theta
-
-    def _log_prob_approx_posterior_mog(self, theta: Tensor, x: Tensor) -> Tensor:
-        """
-        Return log-probability of the approximate posterior for MoG proposal.
-
-        For MoG proposals and MoG density estimators, this can be done in closed form
-        and does not require atomic loss (i.e. there will be no leakage issues).
-
-        Notation:
-
-        m are mean vectors.
-        prec are precision matrices.
-        cov are covariance matrices.
-
-        _p at the end indicates that it is the proposal.
-        _d indicates that it is the density estimator.
-        _pp indicates the proposal posterior.
-
-        All tensors will have shapes (batch_dim, num_components, ...)
-
-        Args:
-            theta: Batch of parameters θ.
-            x: Batch of data.
-
-        Returns:
-            Log-probability of the proposal posterior.
-        """
-        # Check if default_x was set previously.
-        # if self.default_x is not None and torch.all(x == self.default_x):
-        #     # Use the previously computed mixture components of the proposal posterior.
-        #     logits_pp, m_pp, prec_pp = self.logits_pp, self.m_pp, self.prec_pp
-        #
-        #     # Expand to batch size (e.g., during evaluation)
-        #     batch_size = theta.shape[0]
-        #     logits_pp = logits_pp.repeat(batch_size, 1)
-        #     m_pp = m_pp.repeat(batch_size, 1, 1)
-        #     prec_pp = prec_pp.repeat(batch_size, 1, 1, 1)
-        # else:
-        # Compute the mixture components of the proposal posterior.
-        logits_pp, m_pp, prec_pp = self._get_mixture_components(x)
-
-        # Only add the default_x if it is a single value and not a batch of data
-        if x.shape[0] == 1:
-            self.default_x = x
-        self.logits_pp, self.m_pp, self.prec_pp = logits_pp, m_pp, prec_pp
-
-        # z-score theta if it z-scoring had been requested.
-        theta = self._maybe_z_score_theta(theta)
-
-        # Compute the log_prob of theta under the product.
-        log_prob_proposal_posterior = utils.mog_log_prob(
-            theta,
-            logits_pp,
-            m_pp,
-            prec_pp,
-        )
-        utils.assert_all_finite(log_prob_proposal_posterior, "proposal posterior eval")
-        return log_prob_proposal_posterior
 
     def _get_mixture_components(self, x: Tensor):
         """
@@ -266,12 +225,7 @@ class MoGFlow_SNPE_A(flows.Flow):
             logits_p, m_p, prec_p = self._proposal._get_mixture_components(x)
 
         # Compute the MoG parameters of the proposal posterior.
-        (
-            logits_pp,
-            m_pp,
-            prec_pp,
-            cov_pp,
-        ) = self._automatic_proposal_posterior_transformation(
+        logits_pp, m_pp, prec_pp, cov_pp = self._proposal_posterior_transformation(
             logits_p,
             m_p,
             prec_p,
@@ -281,17 +235,17 @@ class MoGFlow_SNPE_A(flows.Flow):
         )
         return logits_pp, m_pp, prec_pp
 
-    def _automatic_proposal_posterior_transformation(
+    def _proposal_posterior_transformation(
         self,
-        logits_p: Tensor,
-        means_p: Tensor,
-        precisions_p: Tensor,
+        logits_pprior: Tensor,
+        means_pprior: Tensor,
+        precisions_pprior: Tensor,
         logits_d: Tensor,
         means_d: Tensor,
         precisions_d: Tensor,
     ):
         r"""
-        Returns the MoG parameters of the proposal posterior.
+        Transforms the proposal posterior (the MDN) into the posterior.
 
         The proposal posterior is:
         $p(\theta|x) = 1/Z * q(\theta|x) * p(\theta) / prop(\theta)$
@@ -313,9 +267,9 @@ class MoGFlow_SNPE_A(flows.Flow):
         3) Multiply them with simple matrix operations.
 
         Args:
-            logits_p: Component weight of each Gaussian of the proposal.
-            means_p: Mean of each Gaussian of the proposal.
-            precisions_p: Precision matrix of each Gaussian of the proposal.
+            logits_pprior: Component weight of each Gaussian of the proposal prior.
+            means_pprior: Mean of each Gaussian of the proposal prior.
+            precisions_pprior: Precision matrix of each Gaussian of the proposal prior.
             logits_d: Component weight for each Gaussian of the density estimator.
             means_d: Mean of each Gaussian of the density estimator.
             precisions_d: Precision matrix of each Gaussian of the density estimator.
@@ -325,31 +279,31 @@ class MoGFlow_SNPE_A(flows.Flow):
             density estimator has K terms).
         """
 
-        precisions_pp, covariances_pp = self._precisions_posterior(
-            precisions_p, precisions_d
+        precisions_post, covariances_post = self._precisions_posterior(
+            precisions_pprior, precisions_d
         )
 
-        means_pp = self._means_proposal_posterior(
-            covariances_pp,
-            means_p,
-            precisions_p,
+        means_post = self._means_posterior(
+            covariances_post,
+            means_pprior,
+            precisions_pprior,
             means_d,
             precisions_d,
         )
 
-        logits_pp = MoGFlow_SNPE_A._logits_proposal_posterior(
-            means_pp,
-            precisions_pp,
-            covariances_pp,
-            logits_p,
-            means_p,
-            precisions_p,
+        logits_post = MoGFlow_SNPE_A._logits_posterior(
+            means_post,
+            precisions_post,
+            covariances_post,
+            logits_pprior,
+            means_pprior,
+            precisions_pprior,
             logits_d,
             means_d,
             precisions_d,
         )
 
-        return logits_pp, means_pp, precisions_pp, covariances_pp
+        return logits_post, means_post, precisions_post, covariances_post
 
     def _set_state_for_mog_proposal(self) -> None:
         """
@@ -384,10 +338,10 @@ class MoGFlow_SNPE_A(flows.Flow):
         This function is highly similar to `SNPE_C._set_maybe_z_scored_prior()`.
 
         The proposal posterior is:
-        $pp(\theta|x) = 1/Z * q(\theta|x) * p(\theta) / prop(\theta)$
+        $p(\theta|x) = 1/Z * q(\theta|x) * prop(\theta) / p(\theta)$
 
         Let's denote z-scored theta by `a`: a = (theta - mean) / std
-        Then $pp'(a|x) = 1/Z_2 * q'(a|x) * p'(a) / prop'(a)$
+        Then $p'(a|x) = 1/Z_2 * q'(a|x) * prop'(a) / p'(a)$
 
         The ' indicates that the evaluation occurs in standardized space. The constant
         scaling factor has been absorbed into $Z_2$.
@@ -442,19 +396,19 @@ class MoGFlow_SNPE_A(flows.Flow):
 
     def _precisions_posterior(self, precisions_pprior: Tensor, precisions_d: Tensor):
         r"""
-        Return the precisions and covariances of the posterior.
+        Return the precisions and covariances of the MoG posterior.
 
         As described at the end of Appendix C in [1], it can happen that the
         proposal's precision matrix is not positive definite.
 
         $S_k^\prime = ( S_k^{-1} - S_0^{-1} )^{-1}$
-        (see eq. (23) in Appendix C of [1])
+        (see eq (23) in Appendix C of [1])
 
         Args:
-            precisions_pprior: Precision matrices of the proposal prior distribution.
+            precisions_pprior: Precision matrices of the proposal prior.
             precisions_d: Precision matrices of the density estimator.
 
-        Returns: (Precisions, Covariances) of the proposal posterior. L*K terms.
+        Returns: (Precisions, Covariances) of the MoG posterior. L*K terms.
         """
 
         num_comps_p = precisions_pprior.shape[1]
@@ -479,33 +433,28 @@ class MoGFlow_SNPE_A(flows.Flow):
         precisions_pprior_rep = precisions_pprior.repeat_interleave(num_comps_d, dim=1)
         precisions_d_rep = precisions_d.repeat(1, num_comps_p, 1, 1)
 
-        precisions_p = precisions_d_rep - precisions_pprior_rep  # see Appendix C in [1]
+        precisions_p = precisions_d_rep - precisions_pprior_rep
         if isinstance(self._maybe_z_scored_prior, MultivariateNormal):
-            precisions_p += (
-                self._maybe_z_scored_prior.precision_matrix
-            )  # see Appendix C in [1]
+            precisions_p += self._maybe_z_scored_prior.precision_matrix
 
-        # Check if positive definite
+        # Check if precision matrix is positive definite.
         for idx_batch, batches in enumerate(precisions_p):
             for idx_comp, pp in enumerate(batches):
                 eig_pp = torch.symeig(pp, eigenvectors=False).eigenvalues
                 if not (eig_pp > 0).all():
                     if self._allow_precision_correction:
                         # Shift the eigenvalues to be at minimum 1e-6.
-                        precisions_p[idx_batch, idx_comp] = pp - torch.eye(pp.shape[0]) * (
-                            min(eig_pp) - 1e-6
-                        )
-                        precisions_p[idx_batch, idx_comp] = torch.clamp(
-                            precisions_p[idx_batch, idx_comp], min=1e-6
-                        )
+                        precisions_p[idx_batch, idx_comp] = pp - torch.eye(
+                            pp.shape[0]
+                        ) * (min(eig_pp) - 1e-6)
                         warn(
                             "The precision matrix of a posterior has not been positive "
                             "definite at least once. Added diagonal entries with the "
-                            "smallest eigenvalue to "
+                            "smallest eigenvalue to 1e-6."
                         )
 
                     else:
-                        # No failing tolerated.
+                        # Fail when encountering an ill-conditioned precision matrix.
                         raise AssertionError(
                             "The precision matrix of a posterior is not positive definite! "
                             "This is a known issue for SNPE-A. Either try a different parameter "
@@ -514,79 +463,81 @@ class MoGFlow_SNPE_A(flows.Flow):
                         )
 
         covariances_p = torch.inverse(precisions_p)
-
         return precisions_p, covariances_p
 
-    def _means_proposal_posterior(
+    def _means_posterior(
         self,
-        covariances_pp: Tensor,
-        means_p: Tensor,
-        precisions_p: Tensor,
+        covariances_post: Tensor,
+        means_pprior: Tensor,
+        precisions_pprior: Tensor,
         means_d: Tensor,
         precisions_d: Tensor,
     ):
-        """
-        Return the means of the proposal posterior.
+        r"""
+        Return the means of the MoG posterior.
 
-        m_ik = C_ik * (-P_k * m_k + P_i * m_i + P_o * m_o).
-        (matching the notation of Appendix A.1 in [2])
+        $m_k^\prime = S_k^\prime ( S_k^{-1} m_k - S_0^{-1} m_0 )$
+        (see eq (24) in Appendix C of [1])
 
         Args:
-            covariances_pp: Covariance matrices of the proposal posterior.
-            means_p: Means of the proposal distribution.
-            precisions_p: Precision matrices of the proposal distribution.
+            covariances_post: Covariance matrices of the MoG posterior.
+            means_pprior: Means of the proposal prior.
+            precisions_pprior: Precision matrices of the proposal prior.
             means_d: Means of the density estimator.
             precisions_d: Precision matrices of the density estimator.
 
-        Returns: Means of the proposal posterior. L*K terms.
+        Returns: Means of the MoG posterior. L*K terms.
         """
 
-        num_comps_p = precisions_p.shape[1]
+        num_comps_pprior = precisions_pprior.shape[1]
         num_comps_d = precisions_d.shape[1]
 
-        # First, compute the product P_i * m_i and P_j * m_j
-        prec_m_prod_p = utils.batched_mixture_mv(precisions_p, means_p)
+        # Compute the products P_k * m_k and P_0 * m_0.
+        prec_m_prod_pprior = utils.batched_mixture_mv(precisions_pprior, means_pprior)
         prec_m_prod_d = utils.batched_mixture_mv(precisions_d, means_d)
 
         # Repeat them to allow for matrix operations: same trick as for the precisions.
-        prec_m_prod_p_rep = prec_m_prod_p.repeat_interleave(num_comps_d, dim=1)
-        prec_m_prod_d_rep = prec_m_prod_d.repeat(1, num_comps_p, 1)
+        prec_m_prod_pprior_rep = prec_m_prod_pprior.repeat_interleave(
+            num_comps_d, dim=1
+        )
+        prec_m_prod_d_rep = prec_m_prod_d.repeat(1, num_comps_pprior, 1)
 
-        # Means = C_ik * (-P_k * m_k + P_i * m_i + P_o * m_o).
-        summed_cov_m_prod_rep = (
-            prec_m_prod_d_rep - prec_m_prod_p_rep
-        )  # see Appendix C in [1]
+        # Compute the means P_k^prime * (P_k * m_k - P_0 * m_0).
+        summed_cov_m_prod_rep = prec_m_prod_d_rep - prec_m_prod_pprior_rep
         if isinstance(self._maybe_z_scored_prior, MultivariateNormal):
-            summed_cov_m_prod_rep += self.prec_m_prod_prior  # see Appendix C in [1]
+            summed_cov_m_prod_rep += self.prec_m_prod_prior
 
-        means_pp = utils.batched_mixture_mv(covariances_pp, summed_cov_m_prod_rep)
-
-        return means_pp
+        means_p = utils.batched_mixture_mv(covariances_post, summed_cov_m_prod_rep)
+        return means_p
 
     @staticmethod
-    def _logits_proposal_posterior(
-        means_pp: Tensor,
-        precisions_pp: Tensor,
-        covariances_pp: Tensor,
-        logits_p: Tensor,
-        means_p: Tensor,
-        precisions_p: Tensor,
+    def _logits_posterior(
+        means_post: Tensor,
+        precisions_post: Tensor,
+        covariances_post: Tensor,
+        logits_pprior: Tensor,
+        means_pprior: Tensor,
+        precisions_pprior: Tensor,
         logits_d: Tensor,
         means_d: Tensor,
         precisions_d: Tensor,
     ):
-        """
-        Return the component weights (i.e. logits) of the proposal posterior.
+        r"""
+        Return the component weights (i.e. logits) of the MoG posterior.
 
-        mu_i.T * P_i * mu_i
+        $\alpha_k^\prime = \frac{ \alpha_k exp(-0.5 c_k) }{ \sum{j} \alpha_j exp(-0.5 c_j) } $
+        with
+        $c_k = logdet(S_k) - logdet(S_0) - logdet(S_k^\prime) +
+             + m_k^T P_k m_k - m_0^T P_0 m_0 - m_k^\prime^T P_k^\prime m_k^\prime$
+        (see eqs. (25, 26) in Appendix C of [1])
 
         Args:
-            means_pp: Means of the proposal posterior.
-            precisions_pp: Precision matrices of the proposal posterior.
-            covariances_pp: Covariance matrices of the proposal posterior.
-            logits_p: Component weights (i.e. logits) of the proposal distribution.
-            means_p: Means of the proposal distribution.
-            precisions_p: Precision matrices of the proposal distribution.
+            means_post: Means of the posterior.
+            precisions_post: Precision matrices of the posterior.
+            covariances_post: Covariance matrices of the posterior.
+            logits_pprior: Component weights (i.e. logits) of the proposal prior.
+            means_pprior: Means of the proposal prior.
+            precisions_pprior: Precision matrices of the proposal prior.
             logits_d: Component weights (i.e. logits) of the density estimator.
             means_d: Means of the density estimator.
             precisions_d: Precision matrices of the density estimator.
@@ -594,64 +545,64 @@ class MoGFlow_SNPE_A(flows.Flow):
         Returns: Component weights of the proposal posterior. L*K terms.
         """
 
-        num_comps_p = precisions_p.shape[1]
+        num_comps_pprior = precisions_pprior.shape[1]
         num_comps_d = precisions_d.shape[1]
 
-        # Compute log(alpha_i * beta_j)
-        logits_p_rep = logits_p.repeat_interleave(num_comps_d, dim=1)
-        logits_d_rep = logits_d.repeat(1, num_comps_p)
-        logit_factors = logits_d_rep - logits_p_rep  # see Appendix C in [1]
+        # Compute the ratio of the logits similar to eq (10) in Appendix A.1 of [2]
+        logits_pprior_rep = logits_pprior.repeat_interleave(num_comps_d, dim=1)
+        logits_d_rep = logits_d.repeat(1, num_comps_pprior)
+        logit_factors = logits_d_rep - logits_pprior_rep
 
-        # Compute sqrt(det()/(det()*det()))
-        logdet_covariances_pp = torch.logdet(covariances_pp)
-        logdet_covariances_p = -torch.logdet(
-            precisions_p
-        )  # Sigma^tilde_k in eq. (14) in [2]
-        logdet_covariances_d = -torch.logdet(precisions_d)  # Sigma_i in eq. (14) in [2]
+        # Compute the log-determinants
+        logdet_covariances_post = torch.logdet(covariances_post)
+        logdet_covariances_pprior = -torch.logdet(precisions_pprior)
+        logdet_covariances_d = -torch.logdet(precisions_d)
 
         # Repeat the proposal and density estimator terms such that there are LK terms.
         # Same trick as has been used above.
-        logdet_covariances_p_rep = logdet_covariances_p.repeat_interleave(
+        logdet_covariances_pprior_rep = logdet_covariances_pprior.repeat_interleave(
             num_comps_d, dim=1
         )
-        logdet_covariances_d_rep = logdet_covariances_d.repeat(1, num_comps_p)
+        logdet_covariances_d_rep = logdet_covariances_d.repeat(1, num_comps_pprior)
 
-        log_sqrt_det_ratio = 0.5 * (  # eq (26) in [1]
-            logdet_covariances_pp + logdet_covariances_p_rep - logdet_covariances_d_rep
+        log_sqrt_det_ratio = 0.5 * (  # similar to eq (14) in Appendix A.1 of [2]
+            logdet_covariances_post
+            + logdet_covariances_pprior_rep
+            - logdet_covariances_d_rep
         )
 
         # Compute for proposal, density estimator, and proposal posterior:
-        exponent_p = utils.batched_mixture_vmv(
-            precisions_p, means_p  # m_0 in eq (26) in [1]
+        exponent_pprior = utils.batched_mixture_vmv(
+            precisions_pprior, means_pprior  # m_0 in eq (26) in Appendix C of [1]
         )
         exponent_d = utils.batched_mixture_vmv(
-            precisions_d, means_d  # m_k in eq (26) in [1]
+            precisions_d, means_d  # m_k in eq (26) in Appendix C of [1]
         )
-        exponent_pp = utils.batched_mixture_vmv(
-            precisions_pp, means_pp  # m^\prime_k in eq (26) in [1]
+        exponent_post = utils.batched_mixture_vmv(
+            precisions_post, means_post  # m_k^\prime in eq (26) in Appendix C of [1]
         )
 
         # Extend proposal and density estimator exponents to get LK terms.
-        exponent_p_rep = exponent_p.repeat_interleave(num_comps_d, dim=1)
-        exponent_d_rep = exponent_d.repeat(1, num_comps_p)
+        exponent_prior_rep = exponent_pprior.repeat_interleave(num_comps_d, dim=1)
+        exponent_d_rep = exponent_d.repeat(1, num_comps_pprior)
         exponent = -0.5 * (
-            exponent_p_rep - exponent_d_rep - exponent_pp  # eq (26) in [1]
+            exponent_prior_rep - exponent_d_rep - exponent_post  # eq (26) in [1]
         )
 
-        logits_pp = logit_factors + log_sqrt_det_ratio + exponent
-
-        return logits_pp
+        logits_post = logit_factors + log_sqrt_det_ratio + exponent
+        return logits_post
 
     def prune_negligible_components(self, threshold):
         """Prune components
         Removes all the components whose mixing coefficient is less
         than a threshold.
         """
-        ii = np.nonzero((self.a < threshold).astype(int))[0]
-        total_del_a = np.sum(self.a[ii])
+        # TODO
+        ii = torch.nonzero((self.a < threshold).astype(int))[0]
+        total_del_a = torch.sum(self.a[ii])
         del_count = ii.size
 
         self.ncomp -= del_count
-        self.a = np.delete(self.a, ii)
+        self.a = torch.delete(self.a, ii)
         self.a += total_del_a / self.n_components
         self.xs = [x for i, x in enumerate(self.xs) if i not in ii]
