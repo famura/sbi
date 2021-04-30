@@ -26,7 +26,8 @@ class MoGFlow_SNPE_A(flows.Flow):
         Greenberg et al., ICML 2019, https://arxiv.org/abs/1905.07488.
     """
 
-    def __init__(self, transform, distribution, embedding_net=None):
+    def __init__(self, transform, distribution, embedding_net=None,
+                 allow_precision_correction: bool = True):
         """Constructor.
 
         Args:
@@ -35,6 +36,9 @@ class MoGFlow_SNPE_A(flows.Flow):
                 generates the noise.
             embedding_net: A `nn.Module` which has trainable parameters to encode the
                 context (condition). It is trained jointly with the flow.
+            allow_precision_correction:
+                Add a diagonal with the smallest eigenvalue in every entry in case
+                the precision matrix becomes ill-conditioned.
         """
         # Construct flow
         super().__init__(transform, distribution, embedding_net)
@@ -42,6 +46,7 @@ class MoGFlow_SNPE_A(flows.Flow):
         self.logits_pp, self.m_pp, self.prec_pp = None, None, None
         self._proposal = None
         self.default_x = None
+        self._allow_precision_correction = allow_precision_correction
 
     @property
     def proposal(
@@ -237,6 +242,7 @@ class MoGFlow_SNPE_A(flows.Flow):
         Returns:
             Mixture components of the posterior.
         """
+
         # Evaluate the density estimator.
         encoded_x = self._embedding_net(x)
         dist = self._distribution  # defined to avoid black formatting.
@@ -285,14 +291,14 @@ class MoGFlow_SNPE_A(flows.Flow):
         Returns the MoG parameters of the proposal posterior.
 
         The proposal posterior is:
-        $pp(\theta|x) = 1/Z * q(\theta|x) * prop(\theta) / p(\theta)$
-        In words: proposal posterior = posterior estimate * proposal / prior.
+        $p(\theta|x) = 1/Z * q(\theta|x) * p(\theta) / prop(\theta)$
+        In words: posterior = proposal posterior estimate * prior / proposal.
 
-        If the posterior estimate and the proposal are MoG and the prior is either
-        Gaussian or uniform, we can solve this in closed-form. The is implemented in
-        this function.
+        Since the proposal posterior estimate and the proposal are MoG, and the
+        prior is either Gaussian or uniform, we can solve this in closed-form.
 
-        This function implements Appendix A1 from Greenberg et al. 2019.
+        This function implements Appendix C from [1], and is highly similar to
+        `SNPE_C._automatic_posterior_transformation()`.
 
         We have to build L*K components. How do we do this?
         Example: proposal has two components, density estimator has three components.
@@ -316,7 +322,7 @@ class MoGFlow_SNPE_A(flows.Flow):
             density estimator has K terms).
         """
 
-        precisions_pp, covariances_pp = self._precisions_proposal_posterior(
+        precisions_pp, covariances_pp = self._precisions_posterior(
             precisions_p, precisions_d
         )
 
@@ -344,7 +350,10 @@ class MoGFlow_SNPE_A(flows.Flow):
 
     def _set_state_for_mog_proposal(self) -> None:
         """
-        Set state variables that are used at every training step of non-atomic SNPE-C.
+        Set state variables of the MoGFlow_SNPE_A instance evevy time `set_proposal()`
+        is called, i.e. every time a posterior is build using `SNPE_A.build_posterior()`.
+
+        This function is almost identical to `SNPE_C._set_state_for_mog_proposal()`.
 
         Three things are computed:
         1) Check if z-scoring was requested. To do so, we check if the `_transform`
@@ -369,6 +378,8 @@ class MoGFlow_SNPE_A(flows.Flow):
         r"""
         Compute and store potentially standardized prior (if z-scoring was requested).
 
+        This function is highly similar to `SNPE_C._set_maybe_z_scored_prior()`.
+
         The proposal posterior is:
         $pp(\theta|x) = 1/Z * q(\theta|x) * p(\theta) / prop(\theta)$
 
@@ -390,7 +401,7 @@ class MoGFlow_SNPE_A(flows.Flow):
             scale = self._transform._transforms[0]._scale
             shift = self._transform._transforms[0]._shift
 
-            # Following the definintion of the linear transform in
+            # Following the definition of the linear transform in
             # `standardizing_transform` in `sbiutils.py`:
             # shift=-mean / std
             # scale=1 / std
@@ -408,8 +419,7 @@ class MoGFlow_SNPE_A(flows.Flow):
 
             if isinstance(prior, MultivariateNormal):
                 self._maybe_z_scored_prior = MultivariateNormal(
-                    almost_zero_mean,
-                    torch.diag(almost_one_std),
+                    almost_zero_mean, torch.diag(almost_one_std)
                 )
             else:
                 range_ = torch.sqrt(almost_one_std * 3.0)
@@ -427,39 +437,32 @@ class MoGFlow_SNPE_A(flows.Flow):
 
         return theta
 
-    def _precisions_proposal_posterior(
-        self,
-        precisions_p: Tensor,
-        precisions_d: Tensor,
-    ):
-        """
-        Return the precisions and covariances of the proposal posterior.
+    def _precisions_posterior(self, precisions_pprior: Tensor, precisions_d: Tensor):
+        r"""
+        Return the precisions and covariances of the posterior.
 
-        C_ik = (P_i - P_k + P_o)^{-1}.
-        (matching the notation of Appendix A.1 in [2])
+        As described at the end of Appendix C in [1], it can happen that the
+        proposal's precision matrix is not positive definite.
 
-        [1] _Fast epsilon-free Inference of Simulation Models with Bayesian Conditional
-            Density Estimation_, Papamakarios et al., NeurIPS 2016,
-            https://arxiv.org/abs/1605.06376.
-        [2] _Automatic Posterior Transformation for Likelihood-free Inference_,
-            Greenberg et al., ICML 2019, https://arxiv.org/abs/1905.07488.
+        $S_k^\prime = ( S_k^{-1} - S_0^{-1} )^{-1}$
+        (see eq. (23) in Appendix C of [1])
 
         Args:
-            precisions_p: Precision matrices of the proposal distribution.
+            precisions_pprior: Precision matrices of the proposal prior distribution.
             precisions_d: Precision matrices of the density estimator.
 
         Returns: (Precisions, Covariances) of the proposal posterior. L*K terms.
         """
 
-        num_comps_p = precisions_p.shape[1]
+        num_comps_p = precisions_pprior.shape[1]
         num_comps_d = precisions_d.shape[1]
 
         # Check if precision matrices are positive definite.
-        for batches in precisions_p:
-            for p in batches:
-                eig_p = torch.symeig(p, eigenvectors=False).eigenvalues
+        for batches in precisions_pprior:
+            for pprior in batches:
+                eig_pprior = torch.symeig(pprior, eigenvectors=False).eigenvalues
                 assert (
-                    eig_p > 0
+                    eig_pprior > 0
                 ).all(), (
                     "The precision matrix of the proposal is not positive definite!"
                 )
@@ -470,39 +473,46 @@ class MoGFlow_SNPE_A(flows.Flow):
                     eig_d > 0
                 ).all(), "The precision matrix of the density estimator is not positive definite!"
 
-        precisions_p_rep = precisions_p.repeat_interleave(num_comps_d, dim=1)
+        precisions_pprior_rep = precisions_pprior.repeat_interleave(num_comps_d, dim=1)
         precisions_d_rep = precisions_d.repeat(1, num_comps_p, 1, 1)
 
-        precisions_pp = precisions_d_rep - precisions_p_rep  # see Appendix C in [1]
+        precisions_p = precisions_d_rep - precisions_pprior_rep  # see Appendix C in [1]
         if isinstance(self._maybe_z_scored_prior, MultivariateNormal):
-            precisions_pp += (
+            precisions_p += (
                 self._maybe_z_scored_prior.precision_matrix
             )  # see Appendix C in [1]
 
         # Check if positive definite
-        for idx_batch, batches in enumerate(precisions_pp):
+        for idx_batch, batches in enumerate(precisions_p):
             for idx_comp, pp in enumerate(batches):
                 eig_pp = torch.symeig(pp, eigenvectors=False).eigenvalues
-                # assert (
-                #     eig_pp > 0
-                # ).all(), "The precision matrix of a proposal posterior is not positive definite!"
                 if not (eig_pp > 0).all():
-                    # Shift the eigenvalues to be at minimum 1e-6
-                    precisions_pp[idx_batch, idx_comp] = pp - torch.eye(pp.shape[0]) * (
-                        min(eig_pp) - 1e-6
-                    )
-                    precisions_pp[idx_batch, idx_comp] = torch.clamp(
-                        precisions_pp[idx_batch, idx_comp], min=1e-6
-                    )
-                    warn(
-                        "The precision matrix of a proposal posterior is not positive definite"
-                    )
-                    # print(torch.symeig(precisions_pp[idx_batch, idx_comp],eigenvectors=False).eigenvalues.numpy())
-                    # print("-"*5)
+                    if self._allow_precision_correction:
+                        # Shift the eigenvalues to be at minimum 1e-6.
+                        precisions_p[idx_batch, idx_comp] = pp - torch.eye(pp.shape[0]) * (
+                            min(eig_pp) - 1e-6
+                        )
+                        precisions_p[idx_batch, idx_comp] = torch.clamp(
+                            precisions_p[idx_batch, idx_comp], min=1e-6
+                        )
+                        warn(
+                            "The precision matrix of a posterior has not been positive "
+                            "definite at least once. Added diagonal entries with the "
+                            "smallest eigenvalue to "
+                        )
 
-        covariances_pp = torch.inverse(precisions_pp)
+                    else:
+                        # No failing tolerated.
+                        raise AssertionError(
+                            "The precision matrix of a posterior is not positive definite! "
+                            "This is a known issue for SNPE-A. Either try a different parameter "
+                            "setting or pass `allow_precision_correction=True` when constructing "
+                            "the `MoGFlow_SNPE_A` density estimator."
+                        )
 
-        return precisions_pp, covariances_pp
+        covariances_p = torch.inverse(precisions_p)
+
+        return precisions_p, covariances_p
 
     def _means_proposal_posterior(
         self,
@@ -517,12 +527,6 @@ class MoGFlow_SNPE_A(flows.Flow):
 
         m_ik = C_ik * (-P_k * m_k + P_i * m_i + P_o * m_o).
         (matching the notation of Appendix A.1 in [2])
-
-        [1] _Fast epsilon-free Inference of Simulation Models with Bayesian Conditional
-            Density Estimation_, Papamakarios et al., NeurIPS 2016,
-            https://arxiv.org/abs/1605.06376.
-        [2] _Automatic Posterior Transformation for Likelihood-free Inference_,
-            Greenberg et al., ICML 2019, https://arxiv.org/abs/1905.07488.
 
         Args:
             covariances_pp: Covariance matrices of the proposal posterior.
@@ -634,3 +638,17 @@ class MoGFlow_SNPE_A(flows.Flow):
         logits_pp = logit_factors + log_sqrt_det_ratio + exponent
 
         return logits_pp
+
+    def prune_negligible_components(self, threshold):
+        """Prune components
+        Removes all the components whose mixing coefficient is less
+        than a threshold.
+        """
+        ii = np.nonzero((self.a < threshold).astype(int))[0]
+        total_del_a = np.sum(self.a[ii])
+        del_count = ii.size
+
+        self.ncomp -= del_count
+        self.a = np.delete(self.a, ii)
+        self.a += total_del_a / self.n_components
+        self.xs = [x for i, x in enumerate(self.xs) if i not in ii]
