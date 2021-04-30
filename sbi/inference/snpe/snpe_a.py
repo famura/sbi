@@ -159,6 +159,27 @@ class SNPE_A(PosteriorEstimator):
 
         return super().train(**kwargs)
 
+    def _loss(
+        self,
+        theta: Tensor,
+        x: Tensor,
+        masks: Tensor,
+        proposal: Optional[Any],
+        calibration_kernel: Callable,
+    ) -> Tensor:
+        """Return loss with proposal correction (`round_>0`) or without it (`round_=0`).
+
+        The loss is the negative log prob. Irrespective of the round or SNPE method
+        (A, B, or C), it can be weighted with a calibration kernel.
+
+        Returns:
+            Calibration kernel-weighted negative log prob.
+        """
+
+        loss = self._neural_net.log_prob(theta, x)
+        loss = loss - torch.ones_like(loss) * self._neural_net._distribution.kl() / loss.numel()
+        return loss
+
     def build_posterior(
         self,
         proposal: Union[MultivariateNormal, utils.BoxUniform, DirectPosterior],
@@ -283,7 +304,7 @@ class SNPE_A(PosteriorEstimator):
 
         :param eps: Standard deviation for the random perturbation.
         """
-        assert isinstance(self._neural_net._distribution, MultivariateGaussianMDN)
+        # assert isinstance(self._neural_net._distribution, MultivariateGaussianMDN)
 
         # Increase the number of components
         self._neural_net._distribution._num_components = self._num_components

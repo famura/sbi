@@ -72,7 +72,7 @@ class MoGFlow_SNPE_A(flows.Flow):
 
     def _get_first_prior_from_proposal(
         self,
-    ) -> Union[utils.BoxUniform, MultivariateNormal, "MoGFlow_SNPE_A"]:
+    ) -> Union["utils.BoxUniform", MultivariateNormal, "MoGFlow_SNPE_A"]:
         """Iterate a possible chain of proposals."""
         curr_prior = self._proposal
 

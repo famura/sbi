@@ -5,6 +5,7 @@ from pyknos.mdn.mdn import MultivariateGaussianMDN
 from pyknos.nflows import transforms
 from torch import Tensor, nn
 
+from sbi.neural_nets.mdn_svi import MultivariateGaussianMDNSVI
 from sbi.neural_nets.mog_flow_snpe_a import MoGFlow_SNPE_A
 from sbi.utils.sbiutils import standardizing_net, standardizing_transform
 
@@ -48,7 +49,7 @@ def build_mdn_snpe_a(
     if z_score_y:
         embedding_net = nn.Sequential(standardizing_net(batch_y), embedding_net)
 
-    distribution = MultivariateGaussianMDN(
+    distribution = MultivariateGaussianMDNSVI(
         features=x_numel,
         context_features=y_numel,
         hidden_features=hidden_features,
@@ -59,10 +60,11 @@ def build_mdn_snpe_a(
             nn.Linear(hidden_features, hidden_features),
             nn.ReLU(),
             nn.Linear(hidden_features, hidden_features),
-            nn.ReLU(),
+            # nn.ReLU(),
         ),
         num_components=num_components,
-        custom_initialization=True,
+        custom_initialization=False,
+        svi=True
     )
 
     neural_net = MoGFlow_SNPE_A(transform, distribution, embedding_net)
