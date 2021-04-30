@@ -86,6 +86,10 @@ class MoGFlow_SNPE_A(flows.Flow):
             return super().log_prob(inputs, context)  # q_phi from eq. (3) in [1]
 
         else:
+            # No importance re-weighting is needed if the proposal prior is the prior
+            if isinstance(self._proposal, (utils.BoxUniform, MultivariateNormal)):
+                return super().log_prob(inputs, context)
+
             # When we want to compute the approx. posterior, a proposal prior \tilde{p}
             # has already been observed. To analytically calculate the log-prob of the
             # Gaussian, we first need to compute the mixture components.
@@ -102,6 +106,10 @@ class MoGFlow_SNPE_A(flows.Flow):
             return super().sample(num_samples, context, batch_size)
 
         else:
+            # No importance re-weighting is needed if the proposal prior is the prior
+            if isinstance(self._proposal, (utils.BoxUniform, MultivariateNormal)):
+                return super().sample(num_samples, context, batch_size)
+
             # When we want to sample from the approx. posterior, a proposal prior \tilde{p}
             # has already been observed. To analytically calculate the log-prob of the
             # Gaussian, we first need to compute the mixture components.
@@ -249,14 +257,9 @@ class MoGFlow_SNPE_A(flows.Flow):
         logits_d, m_d, prec_d, _, _ = dist.get_mixture_components(encoded_x)
         norm_logits_d = logits_d - torch.logsumexp(logits_d, dim=-1, keepdim=True)
 
-        if isinstance(self._proposal, utils.BoxUniform):
+        if isinstance(self._proposal, (utils.BoxUniform, MultivariateNormal)):
             # Uniform prior is uninformative.
             return norm_logits_d, m_d, prec_d
-
-        elif isinstance(self._proposal, MultivariateNormal):
-            logits_p = torch.tensor([1])
-            m_p = self._proposal.mean
-            prec_p = self._proposal.precision_matrix
 
         else:
             # Recursive ask for the mixture components until the prior is yielded.

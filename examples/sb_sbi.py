@@ -1,3 +1,5 @@
+import math
+
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
@@ -11,6 +13,7 @@ from sbi.inference.snpe.snpe_c import SNPE_C
 from sbi.utils import pairplot, posterior_nn
 from sbi.utils.user_input_checks import prepare_for_sbi
 from HH_helper_functions import HHsimulator, calculate_summary_statistics
+from torch.distributions.multivariate_normal import MultivariateNormal
 
 I, t_on, t_off, dt, t, A_soma = syn_current()
 
@@ -58,6 +61,10 @@ if __name__ == "__main__":
     prior = utils.torchutils.BoxUniform(
         low=torch.as_tensor(prior_min), high=torch.as_tensor(prior_max)
     )
+
+    # mean = torch.tensor([45, 6.5])
+    # cov = torch.tensor([[3 * math.sqrt(45), 0], [0, 3 * math.sqrt(6.5)]])
+    # prior = MultivariateNormal(loc=mean, covariance_matrix=cov)
 
     if method == "SNPE_A":
         density_estimator = "mdn_snpe_a"
